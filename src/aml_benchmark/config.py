@@ -36,18 +36,54 @@ def load_yaml(config_name: str) -> dict:
 
 
 class PathConfig:
-    """Resolved absolute paths constructed from ``configs/paths.yaml``."""
+    """Resolved absolute paths constructed from ``configs/paths.yaml``.
 
-    def __init__(self) -> None:
-        cfg = load_yaml("paths")
+    Parameters
+    ----------
+    config_path:
+        Optional path to an alternative ``paths.yaml`` file.  When provided,
+        that file is loaded directly instead of the default
+        ``configs/paths.yaml`` relative to the project root.  This allows
+        the same codebase to run in different environments (e.g. local vs.
+        Google Colab) by passing a custom config at runtime:
+
+            PathConfig("/content/drive/MyDrive/aml/configs/paths_colab.yaml")
+
+        When ``None`` (default), the standard ``configs/paths.yaml`` is used.
+
+    Path resolution (_resolve)
+    --------------------------
+    Values in ``paths.yaml`` can be either relative or absolute:
+
+    * **Relative** paths (e.g. ``data/raw``) are resolved against the
+      project root (two directories above this file).
+    * **Absolute** paths (e.g. ``/content/drive/MyDrive/aml/data/raw``)
+      are used as-is, enabling full Colab / remote-drive support.
+    """
+
+    def __init__(self, config_path: str | Path | None = None) -> None:
+        if config_path is not None:
+            p = Path(config_path)
+            if not p.exists():
+                raise FileNotFoundError(f"Config file not found: {p}")
+            with p.open(encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh)
+        else:
+            cfg = load_yaml("paths")
+
         root = get_project_root()
 
+        def _resolve(value: str) -> Path:
+            """Return absolute path; relative values are anchored to root."""
+            resolved = Path(value)
+            return resolved if resolved.is_absolute() else root / resolved
+
         # Directories
-        self.raw_dir: Path = root / cfg["raw_dir"]
-        self.processed_dir: Path = root / cfg["processed_dir"]
-        self.splits_dir: Path = root / cfg["splits_dir"]
-        self.outputs_dir: Path = root / cfg["outputs_dir"]
-        self.leaderboard_dir: Path = root / cfg["leaderboard_dir"]
+        self.raw_dir: Path = _resolve(cfg["raw_dir"])
+        self.processed_dir: Path = _resolve(cfg["processed_dir"])
+        self.splits_dir: Path = _resolve(cfg["splits_dir"])
+        self.outputs_dir: Path = _resolve(cfg["outputs_dir"])
+        self.leaderboard_dir: Path = _resolve(cfg["leaderboard_dir"])
 
         # Raw input files
         self.transactions_path: Path = self.raw_dir / cfg["transactions_filename"]

@@ -149,8 +149,14 @@ def _print_grid_summary(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--paths", type=str, default=None,
+                        help="Path to a custom paths.yaml (e.g. for Colab)")
+    args = parser.parse_args()
     try:
-        run_grid()
+        paths = PathConfig(args.paths) if args.paths else PathConfig()
+        run_grid(paths=paths)
     except FileNotFoundError as exc:
         logger.error(str(exc))
         sys.exit(1)

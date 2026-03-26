@@ -279,8 +279,13 @@ def _print_leaderboard(df: pd.DataFrame, top_n: int = 10) -> None:
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--paths", type=str, default=None,
+                        help="Path to a custom paths.yaml (e.g. for Colab)")
+    args = parser.parse_args()
     try:
-        paths = PathConfig()
+        paths = PathConfig(args.paths) if args.paths else PathConfig()
         df = aggregate_part_a(paths)
         if df.empty:
             print("No Part A runs found. Run the benchmark first.")
