@@ -1,0 +1,9 @@
+# -------------------------------------------------------
+# Temporal split configuration
+# Applied to the labeled dataset sorted by timestamp.
+# test_ratio is implicitly 1 - train_ratio - val_ratio.
+# -------------------------------------------------------
+
+train_ratio: 0.70
+val_ratio: 0.15
+# test_ratio: 0.15  (implicit remainder)
