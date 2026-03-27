@@ -108,6 +108,16 @@ def _random_forest(
     return model
 
 
+def _detect_xgb_device() -> str:
+    """Return ``"cuda"`` if an NVIDIA GPU is available, else ``"cpu"``."""
+    import subprocess
+    try:
+        subprocess.check_output(["nvidia-smi"], stderr=subprocess.DEVNULL)
+        return "cuda"
+    except Exception:
+        return "cpu"
+
+
 def _xgboost(
     random_state: int,
     class_weight: dict[int, float] | None,
@@ -118,6 +128,10 @@ def _xgboost(
     ``w1 / w0``, which instructs XGBoost to up-weight positive-class
     gradient updates proportionally.
 
+    GPU acceleration is enabled automatically when an NVIDIA GPU is
+    detected (``nvidia-smi`` available).  Falls back to CPU silently.
+    ``n_jobs=-1`` ensures all CPU cores are used regardless of device.
+
     Requires the ``xgboost`` package (``pip install xgboost``).
     """
     try:
@@ -126,6 +140,10 @@ def _xgboost(
         raise ImportError(
             "xgboost is not installed. Run: pip install xgboost"
         ) from exc
+
+    # Auto-detect GPU
+    device = _detect_xgb_device()
+    logger.info(f"XGBoost device: {device}")
 
     # Derive scale_pos_weight from class_weight dict if provided
     scale_pos_weight: float | None = None
@@ -146,6 +164,8 @@ def _xgboost(
         colsample_bytree=0.8,
         eval_metric="aucpr",
         tree_method="hist",
+        device=device,
+        n_jobs=-1,
         random_state=random_state,
         verbosity=0,
     )
@@ -155,7 +175,7 @@ def _xgboost(
     model = XGBClassifier(**kwargs)
     logger.info(
         f"Model: XGBClassifier | n_estimators=200, max_depth=6, "
-        f"lr=0.05, scale_pos_weight={scale_pos_weight}, "
-        f"random_state={random_state}"
+        f"lr=0.05, device={device}, n_jobs=-1, "
+        f"scale_pos_weight={scale_pos_weight}, random_state={random_state}"
     )
     return model
