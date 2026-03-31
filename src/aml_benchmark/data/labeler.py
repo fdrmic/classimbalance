@@ -45,63 +45,48 @@ def create_labels(
     transactions: pd.DataFrame,
     patterns: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Join pattern labels and metadata onto the transaction table.
+    """Assign labels to the transaction table using the CSV ground truth.
 
     Parameters
     ----------
     transactions:
         Output of :func:`aml_benchmark.data.ingest.load_transactions`.
-        Must contain ``is_laundering_csv`` and the eight key fields
-        consumed by ``make_match_key``.
+        Must contain ``is_laundering_csv``.
     patterns:
-        Output of :func:`aml_benchmark.data.pattern_parser.parse_patterns`.
-        Must contain ``pattern_type`` and ``pattern_block_id``.
+        Accepted for API compatibility but not used in this implementation.
+        Pattern matching is skipped for performance on large datasets
+        (>100 M rows); all pattern-derived columns are set to neutral defaults.
 
     Returns
     -------
-    A copy of *transactions* with six additional columns:
-    ``label_from_patterns``, ``label_existing_csv``, ``mismatch_flag``,
-    ``label``, ``pattern_type``, ``pattern_block_id``.
+    *transactions* with six additional columns:
+    ``label_existing_csv``, ``label``, ``label_from_patterns``,
+    ``mismatch_flag``, ``pattern_type``, ``pattern_block_id``.
     Rows are sorted chronologically by ``timestamp``.
     """
     logger.info(f"Creating labels for {len(transactions):,} transactions ...")
-    # Work directly on the dataframes to avoid doubling RAM usage (~20 GB saved)
+
     df = transactions
-    pat = patterns
 
-    # --- Build match keys -------------------------------------------------
-    logger.info("Building match keys for transactions ...")
-    df["_match_key"] = make_match_key(df)
-    logger.info("Match keys built for transactions.")
+    # Use CSV ground truth directly as label
+    df["label_existing_csv"] = df["is_laundering_csv"]
+    df["label"] = df["is_laundering_csv"]
 
-    logger.info("Building match keys for patterns ...")
-    pat["_match_key"] = make_match_key(pat)
+    # Pattern matching skipped for performance — set neutral defaults
+    df["label_from_patterns"] = 0
+    df["mismatch_flag"] = 0
+    df["pattern_type"] = "NONE"
+    df["pattern_block_id"] = -1
 
-    illicit_keys: set[str] = set(pat["_match_key"].dropna())
-    logger.info(f"Unique pattern match keys : {len(illicit_keys):,}")
-    trans_keys: set[str] = set(df["_match_key"].dropna())
-    logger.info(f"Unique pattern match keys : {len(illicit_keys):,}")
-
-    # --- Label assignment -------------------------------------------------
-    df["label_from_patterns"] = df["_match_key"].isin(illicit_keys).astype(int)
-    df = df.rename(columns={"is_laundering_csv": "label_existing_csv"})
-    df["mismatch_flag"] = (
-        df["label_from_patterns"] != df["label_existing_csv"]
-    ).astype(int)
-    # Authoritative label = CSV ground truth (more complete than patterns file)
-    df["label"] = df["label_existing_csv"]
-
-    # --- Attach pattern metadata ------------------------------------------
-    logger.info("Attaching pattern metadata ...")
-    _attach_pattern_metadata(df, pat)
-
-    # --- Cleanup ----------------------------------------------------------
-    df = df.drop(columns=["_match_key"])
     logger.info("Sorting by timestamp ...")
     df = df.sort_values("timestamp").reset_index(drop=True)
 
-    # --- Audit log --------------------------------------------------------
-    _log_summary(df, illicit_keys, trans_keys, n_pattern_rows=len(pat))
+    n_illicit = int(df["label"].sum())
+    total = len(df)
+    logger.info(
+        f"Labels created | total={total:,} | illicit={n_illicit:,} | "
+        f"ratio={n_illicit / total:.4%}"
+    )
 
     return df
 
