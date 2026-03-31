@@ -64,6 +64,7 @@ def create_labels(
     ``label``, ``pattern_type``, ``pattern_block_id``.
     Rows are sorted chronologically by ``timestamp``.
     """
+    logger.info(f"Creating labels for {len(transactions):,} transactions ...")
     df = transactions.copy()
     pat = patterns.copy()
 
