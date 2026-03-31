@@ -90,13 +90,16 @@ class FeaturePipeline:
         -------
         2-D float array of shape ``(n_rows, n_features)``.
         """
+        logger.info(f"FeaturePipeline: deriving features for {len(df):,} rows ...")
         derived = self._derive(df)
+        logger.info("FeaturePipeline: fitting encoder ...")
         self.encoder.fit(derived[_CATEGORICAL])
         self._fitted = True
         logger.info(
             f"FeaturePipeline fitted on {len(df):,} rows | "
             f"{len(self.feature_names)} features: {self.feature_names}"
         )
+        logger.info("FeaturePipeline: assembling feature matrix ...")
         return self._assemble(derived)
 
     def transform(self, df: pd.DataFrame) -> np.ndarray:
@@ -116,6 +119,7 @@ class FeaturePipeline:
                 "FeaturePipeline has not been fitted yet. "
                 "Call fit_transform(train_df) first."
             )
+        logger.info(f"FeaturePipeline: transforming {len(df):,} rows ...")
         derived = self._derive(df)
         return self._assemble(derived)
 

@@ -22,6 +22,7 @@ def save_parquet(df: pd.DataFrame, path: Path) -> None:
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving {len(df):,} rows -> {path} ...")
     df.to_parquet(path, index=False, engine="pyarrow")
     logger.info(f"Saved {len(df):,} rows -> {path}")
 

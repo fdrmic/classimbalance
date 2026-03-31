@@ -54,9 +54,8 @@ def _norm_amount(series: pd.Series) -> pd.Series:
     Using an explicit format string avoids floating-point string
     representation variance (e.g. ``"5326.7"`` vs ``"5326.70"``).
     """
-    return series.astype(float).round(_AMOUNT_DECIMALS).map(
-        lambda x: f"{x:.{_AMOUNT_DECIMALS}f}"
-    )
+    rounded = series.astype(float).round(_AMOUNT_DECIMALS)
+    return rounded.map("{:.2f}".format)
 
 
 # ---------------------------------------------------------------------------

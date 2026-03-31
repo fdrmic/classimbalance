@@ -72,11 +72,13 @@ def create_labels(
     # --- Build match keys -------------------------------------------------
     logger.info("Building match keys for transactions ...")
     df["_match_key"] = make_match_key(df)
+    logger.info("Match keys built for transactions.")
 
     logger.info("Building match keys for patterns ...")
     pat["_match_key"] = make_match_key(pat)
 
     illicit_keys: set[str] = set(pat["_match_key"].dropna())
+    logger.info(f"Unique pattern match keys : {len(illicit_keys):,}")
     trans_keys: set[str] = set(df["_match_key"].dropna())
     logger.info(f"Unique pattern match keys : {len(illicit_keys):,}")
 
