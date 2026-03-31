@@ -65,8 +65,9 @@ def create_labels(
     Rows are sorted chronologically by ``timestamp``.
     """
     logger.info(f"Creating labels for {len(transactions):,} transactions ...")
-    df = transactions.copy()
-    pat = patterns.copy()
+    # Work directly on the dataframes to avoid doubling RAM usage (~20 GB saved)
+    df = transactions
+    pat = patterns
 
     # --- Build match keys -------------------------------------------------
     logger.info("Building match keys for transactions ...")
