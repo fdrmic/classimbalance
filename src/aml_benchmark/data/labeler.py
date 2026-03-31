@@ -79,7 +79,7 @@ def create_labels(
     df["pattern_block_id"] = -1
 
     logger.info("Sorting by timestamp ...")
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    df.sort_values("timestamp", inplace=True, ignore_index=True)
 
     n_illicit = int(df["label"].sum())
     total = len(df)
