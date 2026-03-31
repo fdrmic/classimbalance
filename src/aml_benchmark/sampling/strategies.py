@@ -252,7 +252,9 @@ def _smote(
         k_neighbors=k_neighbors,
         random_state=random_state,
     )
+    logger.info(f"SMOTE fit_resample starting (ratio={ratio:.4f}, k={k_neighbors}) ...")
     X_res, y_res = smote.fit_resample(X, y)
+    logger.info("SMOTE fit_resample done.")
 
     n_pos_after = int(y_res.sum())
     n_synthetic = n_pos_after - n_pos_before
@@ -303,7 +305,9 @@ def _adasyn(
             n_neighbors=n_neighbors,
             random_state=random_state,
         )
+        logger.info(f"ADASYN fit_resample starting (ratio={ratio:.4f}, n_neighbors={n_neighbors}) ...")
         X_res, y_res = adasyn.fit_resample(X, y)
+        logger.info("ADASYN fit_resample done.")
     except RuntimeError as exc:
         # ADASYN can fail if density estimation produces an all-zero sample
         # distribution; fall back to SMOTE in that case.

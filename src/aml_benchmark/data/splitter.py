@@ -160,15 +160,20 @@ def run_split(paths: PathConfig | None = None) -> None:
     )
 
     # Load
+    logger.info("Loading labeled parquet ...")
     df = load_parquet(paths.output_transactions_labeled)
 
     # Split
+    logger.info("Splitting chronologically ...")
     train, val, test = split_chronological(df, train_ratio, val_ratio)
 
     # Save splits
     paths.splits_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Saving train split ...")
     save_parquet(train, paths.train_split)
+    logger.info("Saving val split ...")
     save_parquet(val, paths.val_split)
+    logger.info("Saving test split ...")
     save_parquet(test, paths.test_split)
 
     # Save manifest

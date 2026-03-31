@@ -88,10 +88,12 @@ def create_labels(
     df["label"] = df["label_existing_csv"]
 
     # --- Attach pattern metadata ------------------------------------------
+    logger.info("Attaching pattern metadata ...")
     _attach_pattern_metadata(df, pat)
 
     # --- Cleanup ----------------------------------------------------------
     df = df.drop(columns=["_match_key"])
+    logger.info("Sorting by timestamp ...")
     df = df.sort_values("timestamp").reset_index(drop=True)
 
     # --- Audit log --------------------------------------------------------
