@@ -63,6 +63,7 @@ SUPPORTED_STRATEGIES = (
     "smote",
     "adasyn",
     "class_weighting",
+    "true_cost_weighting",
 )
 
 
@@ -138,8 +139,10 @@ def apply_strategy(
         result = _smote(X_train, y_train, target_prevalence, random_state)
     elif strategy == "adasyn":
         result = _adasyn(X_train, y_train, target_prevalence, random_state)
-    else:  # class_weighting
+    elif strategy == "class_weighting":
         result = _class_weighting(X_train, y_train, target_prevalence)
+    else:  # true_cost_weighting
+        result = _true_cost_weighting(X_train, y_train, target_prevalence)
 
     log_class_counts(result.y, label="after")
     logger.info(
@@ -352,5 +355,46 @@ def _class_weighting(
         n_positive=int(y.sum()),
         n_negative=int((1 - y).sum()),
         strategy="class_weighting",
+        target_prevalence=target_prevalence,
+    )
+
+
+def _true_cost_weighting(
+    X: np.ndarray,
+    y: np.ndarray,
+    target_prevalence: float,
+) -> SamplingResult:
+    """Class weighting based on the actual class ratio in the training data.
+
+    Part B strategy: uses scale_pos_weight = n_negatives / n_positives,
+    i.e. the true imbalance ratio (~1930x for the Large dataset).
+    This differs from class_weighting which derives weights from
+    target_prevalence. No resampling is performed.
+
+    Parameters
+    ----------
+    X:
+        Feature matrix for the training split.
+    y:
+        Binary label array for the training split.
+    target_prevalence:
+        Recorded for metadata but not used to derive weights.
+    """
+    from aml_benchmark.sampling.prevalence import compute_class_weights_from_data
+
+    achieved = compute_achieved_prevalence(y)
+    class_weight = compute_class_weights_from_data(y)
+
+    logger.info(
+        f"True cost weighting: natural prevalence={achieved:.6%}. "
+        f"Model weights: {class_weight}."
+    )
+    return SamplingResult(
+        X=X, y=y,
+        class_weight=class_weight,
+        achieved_prevalence=achieved,
+        n_positive=int(y.sum()),
+        n_negative=int((1 - y).sum()),
+        strategy="true_cost_weighting",
         target_prevalence=target_prevalence,
     )

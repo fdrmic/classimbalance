@@ -97,3 +97,32 @@ def log_class_counts(y: np.ndarray, label: str = "") -> None:
         f"{tag}n_total={n_total:,}  n_pos={n_pos:,}  "
         f"n_neg={n_neg:,}  prevalence={prevalence:.6%}"
     )
+
+
+def compute_class_weights_from_data(y: np.ndarray) -> dict[int, float]:
+    """Derive class weights from the actual class distribution in the data.
+
+    Unlike ``compute_class_weights`` which uses a target prevalence,
+    this function uses the real minority/majority ratio in the training
+    split. For XGBoost this translates to scale_pos_weight = n_neg / n_pos.
+
+    Parameters
+    ----------
+    y:
+        Binary label array for the training split.
+
+    Returns
+    -------
+    Dict ``{0: 1.0, 1: n_negative / n_positive}``.
+    """
+    n_pos = int(y.sum())
+    n_neg = int((1 - y).sum())
+    if n_pos == 0:
+        raise ValueError("No positive samples found in training data.")
+    weight_positive = n_neg / n_pos
+    weights = {0: 1.0, 1: weight_positive}
+    logger.info(
+        f"Class weights from data ratio: "
+        f"n_neg={n_neg:,} / n_pos={n_pos:,} = w1={weight_positive:.2f}"
+    )
+    return weights

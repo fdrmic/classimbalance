@@ -1,0 +1,19 @@
+# -------------------------------------------------------
+# File paths configuration for Part B
+# Separate from Part A to keep results isolated.
+# All paths are relative to the project root.
+# -------------------------------------------------------
+
+raw_dir: data/raw
+processed_dir: data/processed
+splits_dir: data/splits
+outputs_dir: outputs/runs_part_b
+leaderboard_dir: outputs/leaderboard_part_b
+
+transactions_filename: LI-Large_Trans.csv
+accounts_filename: LI-Large_accounts.csv
+patterns_filename: LI-Large_Patterns.txt
+
+output_transactions_labeled: transactions_labeled.parquet
+split_manifest: split_manifest.json
+part_a_summary: part_b_summary.csv
