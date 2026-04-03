@@ -132,20 +132,24 @@ class FeaturePipeline:
         """Return a copy of *df* with derived feature columns added."""
         logger.info(f"Deriving features for {len(df):,} rows ...")
         d = df.copy()
+        logger.info("Copy done, computing features ...")
 
         # Temporal
         d["hour"] = d["timestamp"].dt.hour.astype(np.float64)
         d["day_of_week"] = d["timestamp"].dt.dayofweek.astype(np.float64)
+        logger.info("Temporal features done ...")
 
         # Boolean flags
         d["same_bank_flag"] = (d["from_bank"] == d["to_bank"]).astype(np.float64)
         d["self_transfer_flag"] = (
             d["from_account"] == d["to_account"]
         ).astype(np.float64)
+        logger.info("Boolean flags done ...")
 
         # Log1p on amounts (preserves 0-handling, reduces skew)
         d["amount_paid"] = np.log1p(d["amount_paid"].astype(np.float64))
         d["amount_received"] = np.log1p(d["amount_received"].astype(np.float64))
+        logger.info("Amount transforms done ...")
 
         return d
 
