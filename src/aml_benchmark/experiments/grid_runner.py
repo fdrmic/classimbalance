@@ -153,9 +153,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--paths", type=str, default=None,
                         help="Path to a custom paths.yaml (e.g. for Colab)")
+    parser.add_argument("--benchmark", type=str, default=None,
+                        help="Path to a custom benchmark.yaml (e.g. benchmark_part_b.yaml)")
     args = parser.parse_args()
     try:
         paths = PathConfig(args.paths) if args.paths else PathConfig()
+        if args.benchmark:
+            import shutil
+            from pathlib import Path
+            project_root = Path(__file__).resolve().parents[3]
+            shutil.copy(args.benchmark, project_root / "configs" / "benchmark.yaml")
         run_grid(paths=paths)
     except FileNotFoundError as exc:
         logger.error(str(exc))

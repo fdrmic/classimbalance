@@ -130,6 +130,7 @@ class FeaturePipeline:
     @staticmethod
     def _derive(df: pd.DataFrame) -> pd.DataFrame:
         """Return a copy of *df* with derived feature columns added."""
+        logger.info(f"Deriving features for {len(df):,} rows ...")
         d = df.copy()
 
         # Temporal
