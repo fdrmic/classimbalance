@@ -134,7 +134,7 @@ def run_experiment(
     # 2. Build features  (encoder fit on original training data only)
     # ------------------------------------------------------------------
     logger.info("Building features ...")
-    pipeline = FeaturePipeline()
+    pipeline = FeaturePipeline(accounts_path=str(paths.accounts_path))
     X_train_raw = pipeline.fit_transform(train)
     X_val = pipeline.transform(val)
     X_test = pipeline.transform(test)

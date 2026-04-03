@@ -39,6 +39,11 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import OrdinalEncoder
 
+from aml_benchmark.features.aggregator import (
+    ACCOUNT_FEATURE_NAMES,
+    compute_account_features,
+    load_entity_type_map,
+)
 from aml_benchmark.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -48,7 +53,7 @@ _NUMERIC: list[str] = ["amount_paid", "amount_received"]
 _CATEGORICAL: list[str] = ["payment_format", "payment_currency"]
 _DERIVED: list[str] = ["hour", "day_of_week", "same_bank_flag", "self_transfer_flag"]
 
-FEATURE_NAMES: list[str] = _NUMERIC + _CATEGORICAL + _DERIVED
+FEATURE_NAMES: list[str] = _NUMERIC + _CATEGORICAL + _DERIVED + ACCOUNT_FEATURE_NAMES
 
 
 class FeaturePipeline:
@@ -62,14 +67,17 @@ class FeaturePipeline:
         Fitted ``OrdinalEncoder`` for categorical columns.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, accounts_path: str | None = None) -> None:
         self.encoder: OrdinalEncoder = OrdinalEncoder(
             handle_unknown="use_encoded_value",
-            unknown_value=np.nan,   # NaN for unseen categories at inference time
+            unknown_value=np.nan,
             dtype=np.float64,
         )
         self.feature_names: list[str] = list(FEATURE_NAMES)
         self._fitted: bool = False
+        self._entity_type_map: dict[str, int] = (
+            load_entity_type_map(accounts_path) if accounts_path else {}
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -99,8 +107,10 @@ class FeaturePipeline:
             f"FeaturePipeline fitted on {len(df):,} rows | "
             f"{len(self.feature_names)} features: {self.feature_names}"
         )
+        logger.info("FeaturePipeline: computing account-level features ...")
+        account_feats = compute_account_features(derived, self._entity_type_map)
         logger.info("FeaturePipeline: assembling feature matrix ...")
-        return self._assemble(derived)
+        return self._assemble(derived, account_feats)
 
     def transform(self, df: pd.DataFrame) -> np.ndarray:
         """Apply the fitted pipeline to *df*.
@@ -121,7 +131,9 @@ class FeaturePipeline:
             )
         logger.info(f"FeaturePipeline: transforming {len(df):,} rows ...")
         derived = self._derive(df)
-        return self._assemble(derived)
+        logger.info("FeaturePipeline: computing account-level features ...")
+        account_feats = compute_account_features(derived, self._entity_type_map)
+        return self._assemble(derived, account_feats)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -153,9 +165,10 @@ class FeaturePipeline:
 
         return d
 
-    def _assemble(self, d: pd.DataFrame) -> np.ndarray:
-        """Stack numeric, encoded categorical, and derived arrays."""
-        X_numeric = d[_NUMERIC].to_numpy(dtype=np.float64)
+    def _assemble(self, d: pd.DataFrame, account_feats: pd.DataFrame) -> np.ndarray:
+        """Stack numeric, encoded categorical, derived, and account-level arrays."""
+        X_numeric     = d[_NUMERIC].to_numpy(dtype=np.float64)
         X_categorical = self.encoder.transform(d[_CATEGORICAL])
-        X_derived = d[_DERIVED].to_numpy(dtype=np.float64)
-        return np.hstack([X_numeric, X_categorical, X_derived])
+        X_derived     = d[_DERIVED].to_numpy(dtype=np.float64)
+        X_account     = account_feats[ACCOUNT_FEATURE_NAMES].to_numpy(dtype=np.float64)
+        return np.hstack([X_numeric, X_categorical, X_derived, X_account])
