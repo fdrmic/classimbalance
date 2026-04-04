@@ -27,16 +27,44 @@ Usage
 """
 from __future__ import annotations
 
+import shutil
 import sys
 import time
 import traceback
 from datetime import datetime
+from pathlib import Path
 
 from aml_benchmark.config import PathConfig, load_yaml
 from aml_benchmark.experiments.runner import _prevalence_tag, run_experiment
 from aml_benchmark.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Auto-backup helper
+# ---------------------------------------------------------------------------
+
+def _auto_backup(paths: PathConfig, run_id: str, backup_root: Path) -> None:
+    """Sichert einen einzelnen Run auf Drive nach Abschluss."""
+    try:
+        backup_root.mkdir(parents=True, exist_ok=True)
+
+        # Splits + Feature Cache nur einmal sichern
+        splits_backup = backup_root / "splits"
+        if not splits_backup.exists() and paths.splits_dir.exists():
+            shutil.copytree(paths.splits_dir, splits_backup, dirs_exist_ok=True)
+            logger.info(f"Feature Cache gesichert -> {splits_backup}")
+
+        # Run-Ergebnis sichern (~5MB pro Run)
+        src_run = paths.outputs_dir / run_id
+        dst_run = backup_root / "runs" / run_id
+        if src_run.exists():
+            shutil.copytree(src_run, dst_run, dirs_exist_ok=True)
+            logger.info(f"Run gesichert -> {dst_run}")
+
+    except Exception as e:
+        logger.warning(f"Auto-backup fehlgeschlagen (nicht kritisch): {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +132,12 @@ def run_grid(paths: PathConfig | None = None) -> None:
                         paths=paths,
                     )
                     passed.append(run_id)
+
+                    # Auto-Backup nach jedem erfolgreichen Run
+                    backup_root = Path(
+                        "/content/drive/MyDrive/aml_results/large_run_v2_ongoing"
+                    )
+                    _auto_backup(paths, run_id, backup_root)
 
                 except Exception as exc:
                     error_msg = f"{type(exc).__name__}: {exc}"
