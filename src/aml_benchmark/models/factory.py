@@ -96,7 +96,7 @@ def _random_forest(
         max_features="sqrt",
         max_samples=200_000,
         min_samples_leaf=5,
-        n_jobs=-1,
+        n_jobs=4,
         class_weight=class_weight,
         random_state=random_state,
         verbose=2,
