@@ -99,7 +99,7 @@ def _random_forest(
         n_jobs=-1,
         class_weight=class_weight,
         random_state=random_state,
-        verbose=1,
+        verbose=2,
     )
     logger.info(
         f"Model: RandomForestClassifier | "
