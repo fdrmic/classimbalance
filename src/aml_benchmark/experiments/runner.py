@@ -132,19 +132,48 @@ def run_experiment(
 
     # ------------------------------------------------------------------
     # 2. Build features  (encoder fit on original training data only)
+    #    Features are cached after the first run to avoid recomputing
+    #    account-level aggregations for every experiment.
     # ------------------------------------------------------------------
-    logger.info("Building features ...")
-    pipeline = FeaturePipeline(accounts_path=str(paths.accounts_path))
-    X_train_raw = pipeline.fit_transform(train)
-    X_val = pipeline.transform(val)
-    X_test = pipeline.transform(test)
+    from aml_benchmark.features.feature_cache import (
+        cache_exists,
+        load_features,
+        save_features,
+    )
+    from aml_benchmark.features.pipeline import FEATURE_NAMES
+
+    pipeline_cache_path = paths.splits_dir / "feature_pipeline_v2.pkl"
+
+    if cache_exists(paths.splits_dir):
+        logger.info("Feature cache found -- loading precomputed features ...")
+        X_train_raw = load_features(paths.splits_dir, "train")
+        X_val       = load_features(paths.splits_dir, "val")
+        X_test      = load_features(paths.splits_dir, "test")
+        pipeline    = joblib.load(pipeline_cache_path)
+        logger.info(
+            f"Feature matrix shapes: "
+            f"train={X_train_raw.shape}, val={X_val.shape}, test={X_test.shape}"
+        )
+    else:
+        logger.info("No feature cache found -- computing features (first run only) ...")
+        pipeline = FeaturePipeline(accounts_path=str(paths.accounts_path))
+        logger.info("Building train features ...")
+        X_train_raw = pipeline.fit_transform(train)
+        save_features(X_train_raw, FEATURE_NAMES, paths.splits_dir, "train")
+        logger.info("Building val features ...")
+        X_val = pipeline.transform(val)
+        save_features(X_val, FEATURE_NAMES, paths.splits_dir, "val")
+        logger.info("Building test features ...")
+        X_test = pipeline.transform(test)
+        save_features(X_test, FEATURE_NAMES, paths.splits_dir, "test")
+        joblib.dump(pipeline, pipeline_cache_path)
+        logger.info(f"Feature pipeline cached -> {pipeline_cache_path}")
+        logger.info(
+            f"Feature matrix shapes: "
+            f"train={X_train_raw.shape}, val={X_val.shape}, test={X_test.shape}"
+        )
 
     y_train_raw = train["label"].to_numpy(dtype=int)
-
-    logger.info(
-        f"Feature matrix shapes: "
-        f"train={X_train_raw.shape}, val={X_val.shape}, test={X_test.shape}"
-    )
 
     # ------------------------------------------------------------------
     # 3. Apply sampling strategy  (train only)
