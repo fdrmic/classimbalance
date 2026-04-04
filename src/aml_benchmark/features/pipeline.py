@@ -51,7 +51,16 @@ logger = get_logger(__name__)
 # Column groups
 _NUMERIC: list[str] = ["amount_paid", "amount_received"]
 _CATEGORICAL: list[str] = ["payment_format", "payment_currency"]
-_DERIVED: list[str] = ["hour", "day_of_week", "same_bank_flag", "self_transfer_flag"]
+_DERIVED: list[str] = [
+    "hour",
+    "day_of_week",
+    "same_bank_flag",
+    "self_transfer_flag",
+    "currency_mismatch",
+    "amount_ratio",
+    "fan_in_score",
+    "fan_out_score",
+]
 
 FEATURE_NAMES: list[str] = _NUMERIC + _CATEGORICAL + _DERIVED + ACCOUNT_FEATURE_NAMES
 
@@ -109,6 +118,7 @@ class FeaturePipeline:
         )
         logger.info("FeaturePipeline: computing account-level features ...")
         account_feats = compute_account_features(derived, self._entity_type_map)
+        self._fill_fan_scores(derived, account_feats)
         logger.info("FeaturePipeline: assembling feature matrix ...")
         return self._assemble(derived, account_feats)
 
@@ -133,6 +143,7 @@ class FeaturePipeline:
         derived = self._derive(df)
         logger.info("FeaturePipeline: computing account-level features ...")
         account_feats = compute_account_features(derived, self._entity_type_map)
+        self._fill_fan_scores(derived, account_feats)
         return self._assemble(derived, account_feats)
 
     # ------------------------------------------------------------------
@@ -158,12 +169,74 @@ class FeaturePipeline:
         ).astype(np.float64)
         logger.info("Boolean flags done ...")
 
+        # Currency mismatch — different payment vs receiving currency
+        d["currency_mismatch"] = (
+            d["payment_currency"] != d["receiving_currency"]
+        ).astype(np.float64)
+
+        # Amount ratio — received / paid using RAW amounts (before log1p)
+        # Clip to [0, 10] to suppress extreme FX-conversion outliers
+        raw_paid = d["amount_paid"].astype(np.float64)
+        raw_recv = d["amount_received"].astype(np.float64)
+        d["amount_ratio"] = np.clip(
+            np.where(raw_paid > 0, raw_recv / raw_paid, 1.0),
+            0.0, 10.0,
+        )
+
+        # Fan-in / fan-out placeholders — filled after account features are
+        # computed in fit_transform() / transform()
+        d["fan_in_score"]  = 0.0
+        d["fan_out_score"] = 0.0
+        logger.info("Ratio / fan features initialised ...")
+
         # Log1p on amounts (preserves 0-handling, reduces skew)
-        d["amount_paid"] = np.log1p(d["amount_paid"].astype(np.float64))
-        d["amount_received"] = np.log1p(d["amount_received"].astype(np.float64))
+        d["amount_paid"]     = np.log1p(raw_paid)
+        d["amount_received"] = np.log1p(raw_recv)
         logger.info("Amount transforms done ...")
 
         return d
+
+    @staticmethod
+    def _fill_fan_scores(
+        derived: pd.DataFrame,
+        account_feats: pd.DataFrame,
+    ) -> None:
+        """Write fan-in and fan-out scores into *derived* in-place.
+
+        Both scores are computed from the 7-day account-level rolling counts
+        and therefore can only be set after :func:`compute_account_features`
+        has run.
+
+        Fan-in score
+            ``receiver_tx_count_7d / (sender_tx_count_7d + eps)``
+            High values indicate the account receives far more transactions
+            than it sends — characteristic of collector accounts in Fan-In
+            laundering patterns.
+
+        Fan-out score
+            ``sender_unique_counterparties_7d /
+             (receiver_unique_counterparties_7d + eps)``
+            High values indicate the account disperses funds to many unique
+            recipients while receiving from few — characteristic of disperser
+            accounts in Fan-Out / Scatter patterns.
+        """
+        eps = 1e-6
+
+        fan_in = np.where(
+            account_feats["sender_tx_count_7d"].values > 0,
+            account_feats["receiver_tx_count_7d"].values
+            / (account_feats["sender_tx_count_7d"].values + eps),
+            0.0,
+        )
+        derived["fan_in_score"] = np.clip(fan_in, 0.0, 100.0).astype(np.float64)
+
+        fan_out = np.where(
+            account_feats["receiver_unique_counterparties_7d"].values > 0,
+            account_feats["sender_unique_counterparties_7d"].values
+            / (account_feats["receiver_unique_counterparties_7d"].values + eps),
+            0.0,
+        )
+        derived["fan_out_score"] = np.clip(fan_out, 0.0, 100.0).astype(np.float64)
 
     def _assemble(self, d: pd.DataFrame, account_feats: pd.DataFrame) -> np.ndarray:
         """Stack numeric, encoded categorical, derived, and account-level arrays."""
