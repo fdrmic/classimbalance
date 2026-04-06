@@ -68,6 +68,41 @@ def _auto_backup(paths: PathConfig, run_id: str, backup_root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Resume helper
+# ---------------------------------------------------------------------------
+
+def _find_completed_run(
+    paths: PathConfig,
+    model_name: str,
+    strategy: str,
+    target_prevalence: float,
+) -> str | None:
+    """Check if a valid completed run already exists for this condition.
+
+    A run is considered complete if its output directory contains both
+    ``metrics_test.json`` and ``run_config.json``.
+
+    Returns the run_id if found, ``None`` otherwise.
+    """
+    if not paths.outputs_dir.exists():
+        return None
+
+    ptag = _prevalence_tag(target_prevalence)
+    prefix = f"{model_name}__{strategy}__{ptag}__"
+
+    for run_dir in paths.outputs_dir.iterdir():
+        if not run_dir.is_dir():
+            continue
+        if not run_dir.name.startswith(prefix):
+            continue
+        if (run_dir / "metrics_test.json").exists() and \
+           (run_dir / "run_config.json").exists():
+            return run_dir.name
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Grid runner
 # ---------------------------------------------------------------------------
 
@@ -122,6 +157,17 @@ def run_grid(paths: PathConfig | None = None) -> None:
                     f"model={model_name}  strategy={strategy}  "
                     f"prevalence={target_prevalence:.3%}"
                 )
+
+                # Skip if already completed
+                existing = _find_completed_run(
+                    paths, model_name, strategy, target_prevalence
+                )
+                if existing:
+                    logger.info(
+                        f"  SKIPPING -- completed run found: {existing}"
+                    )
+                    passed.append(existing)
+                    continue
 
                 try:
                     run_experiment(
