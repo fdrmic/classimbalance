@@ -303,7 +303,6 @@ def _adasyn(
 
     ratio = prevalence_to_ratio(target_prevalence)
     try:
-        # Subsample majority class for KNN computation if dataset is too large
         MAX_MAJORITY_FOR_KNN = 500_000
         n_majority = int((y == 0).sum())
 
@@ -319,17 +318,41 @@ def _adasyn(
             idx_sub = np.concatenate([sub_maj_idx, min_idx])
             X_sub = X[idx_sub]
             y_sub = y[idx_sub]
-        else:
-            X_sub, y_sub = X, y
 
-        adasyn = ADASYN(
-            sampling_strategy=ratio,
-            n_neighbors=n_neighbors,
-            random_state=random_state,
-        )
-        logger.info(f"ADASYN fit_resample starting (ratio={ratio:.4f}, n_neighbors={n_neighbors}) ...")
-        X_res, y_res = adasyn.fit_resample(X_sub, y_sub)
-        logger.info("ADASYN fit_resample done.")
+            # Compute ratio for the subsample
+            n_pos_sub = int(y_sub.sum())
+            n_neg_sub = int((y_sub == 0).sum())
+            # Target: enough synthetic samples to reach target_prevalence on full data
+            n_pos_needed = int(round(target_prevalence * n_majority / (1 - target_prevalence)))
+            n_synthetic_needed = max(0, n_pos_needed - int(y.sum()))
+            ratio_sub = (n_pos_sub + n_synthetic_needed) / n_neg_sub
+
+            adasyn = ADASYN(
+                sampling_strategy=min(ratio_sub, 1.0),
+                n_neighbors=n_neighbors,
+                random_state=random_state,
+            )
+            logger.info(f"ADASYN fit_resample starting (ratio={ratio_sub:.4f}, n_neighbors={n_neighbors}) ...")
+            X_res_sub, y_res_sub = adasyn.fit_resample(X_sub, y_sub)
+            logger.info("ADASYN fit_resample done.")
+
+            # Extract only the synthetic minority samples
+            n_synthetic = len(y_res_sub) - len(y_sub)
+            X_synthetic = X_res_sub[len(y_sub):]
+            y_synthetic = y_res_sub[len(y_sub):]
+
+            # Append synthetic samples to full original data
+            X_res = np.concatenate([X, X_synthetic])
+            y_res = np.concatenate([y, y_synthetic])
+        else:
+            adasyn = ADASYN(
+                sampling_strategy=ratio,
+                n_neighbors=n_neighbors,
+                random_state=random_state,
+            )
+            logger.info(f"ADASYN fit_resample starting (ratio={ratio:.4f}, n_neighbors={n_neighbors}) ...")
+            X_res, y_res = adasyn.fit_resample(X, y)
+            logger.info("ADASYN fit_resample done.")
     except RuntimeError as exc:
         # ADASYN can fail if density estimation produces an all-zero sample
         # distribution; fall back to SMOTE in that case.
