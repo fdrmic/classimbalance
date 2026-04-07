@@ -303,13 +303,32 @@ def _adasyn(
 
     ratio = prevalence_to_ratio(target_prevalence)
     try:
+        # Subsample majority class for KNN computation if dataset is too large
+        MAX_MAJORITY_FOR_KNN = 500_000
+        n_majority = int((y == 0).sum())
+
+        if n_majority > MAX_MAJORITY_FOR_KNN:
+            logger.info(
+                f"ADASYN: majority class ({n_majority:,} samples) exceeds "
+                f"{MAX_MAJORITY_FOR_KNN:,} — subsampling for KNN density estimation."
+            )
+            rng = np.random.default_rng(random_state)
+            maj_idx = np.where(y == 0)[0]
+            min_idx = np.where(y == 1)[0]
+            sub_maj_idx = rng.choice(maj_idx, size=MAX_MAJORITY_FOR_KNN, replace=False)
+            idx_sub = np.concatenate([sub_maj_idx, min_idx])
+            X_sub = X[idx_sub]
+            y_sub = y[idx_sub]
+        else:
+            X_sub, y_sub = X, y
+
         adasyn = ADASYN(
             sampling_strategy=ratio,
             n_neighbors=n_neighbors,
             random_state=random_state,
         )
         logger.info(f"ADASYN fit_resample starting (ratio={ratio:.4f}, n_neighbors={n_neighbors}) ...")
-        X_res, y_res = adasyn.fit_resample(X, y)
+        X_res, y_res = adasyn.fit_resample(X_sub, y_sub)
         logger.info("ADASYN fit_resample done.")
     except RuntimeError as exc:
         # ADASYN can fail if density estimation produces an all-zero sample
