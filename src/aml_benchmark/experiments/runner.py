@@ -127,8 +127,14 @@ def run_experiment(
     val = load_parquet(paths.val_split)
     test = load_parquet(paths.test_split)
 
+    train_rows_original = int(len(train))
+    val_rows = int(len(val))
+    test_rows = int(len(test))
+
+    y_train_raw = train["label"].to_numpy(dtype=int)
     y_val = val["label"].to_numpy(dtype=int)
     y_test = test["label"].to_numpy(dtype=int)
+    del val, test  # free raw DataFrames — labels and features are cached
 
     # ------------------------------------------------------------------
     # 2. Build features  (encoder fit on original training data only)
@@ -154,6 +160,7 @@ def run_experiment(
             f"Feature matrix shapes: "
             f"train={X_train_raw.shape}, val={X_val.shape}, test={X_test.shape}"
         )
+        del train  # free raw train DataFrame — X_train_raw is sufficient
     else:
         logger.info("No feature cache found -- computing features (first run only) ...")
         pipeline = FeaturePipeline(accounts_path=str(paths.accounts_path))
@@ -172,8 +179,7 @@ def run_experiment(
             f"Feature matrix shapes: "
             f"train={X_train_raw.shape}, val={X_val.shape}, test={X_test.shape}"
         )
-
-    y_train_raw = train["label"].to_numpy(dtype=int)
+        del train  # free raw train DataFrame — X_train_raw is sufficient
 
     # ------------------------------------------------------------------
     # 3. Apply sampling strategy  (train only)
@@ -229,14 +235,14 @@ def run_experiment(
         "achieved_train_prevalence": round(sampling_result.achieved_prevalence, 8),
         "random_seed": random_seed,
         "feature_names": pipeline.feature_names,
-        "train_rows_original": int(len(train)),
+        "train_rows_original": train_rows_original,
         "train_rows_after_sampling": int(len(y_train)),
         "train_positives_after_sampling": int(sampling_result.n_positive),
         "train_negatives_after_sampling": int(sampling_result.n_negative),
         "n_synthetic_samples": int(sampling_result.n_synthetic),
-        "val_rows": int(len(val)),
+        "val_rows": val_rows,
         "val_positives": int(y_val.sum()),
-        "test_rows": int(len(test)),
+        "test_rows": test_rows,
         "test_positives": int(y_test.sum()),
         "class_weight_used": sampling_result.class_weight,
         "train_time_sec": round(train_sec, 2),
