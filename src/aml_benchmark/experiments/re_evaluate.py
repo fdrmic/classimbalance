@@ -39,6 +39,7 @@ import joblib
 import numpy as np
 
 from aml_benchmark.config import PathConfig
+from aml_benchmark.features.feature_cache import load_features
 from aml_benchmark.evaluation.metrics import (
     compute_all_metrics,
     find_optimal_threshold,
@@ -54,6 +55,7 @@ def re_evaluate_run(
     run_dir: Path,
     val_df,
     test_df,
+    paths: PathConfig,
     criterion: str = "f1",
     overwrite: bool = False,
 ) -> dict | None:
@@ -65,6 +67,8 @@ def re_evaluate_run(
         Path to a single run output folder.
     val_df / test_df:
         Pre-loaded validation and test DataFrames (avoids re-loading per run).
+    paths:
+        :class:`~aml_benchmark.config.PathConfig` (used for ``splits_dir`` feature cache).
     criterion:
         Threshold optimisation criterion (``"f1"``, ``"recall"``, ``"precision"``).
     overwrite:
@@ -81,10 +85,9 @@ def re_evaluate_run(
         return None
 
     model_path = run_dir / "model.pkl"
-    pipeline_path = run_dir / "feature_pipeline.pkl"
 
-    if not model_path.exists() or not pipeline_path.exists():
-        logger.warning(f"Skipping {run_dir.name}: model.pkl or feature_pipeline.pkl missing")
+    if not model_path.exists():
+        logger.warning(f"Skipping {run_dir.name}: model.pkl missing")
         return None
 
     config_path = run_dir / "run_config.json"
@@ -102,14 +105,14 @@ def re_evaluate_run(
 
     logger.info(f"Re-evaluating {run_dir.name} ...")
 
-    pipeline = joblib.load(pipeline_path)
     model = joblib.load(model_path)
 
     y_val = val_df["label"].to_numpy(dtype=int)
     y_test = test_df["label"].to_numpy(dtype=int)
 
-    X_val = pipeline.transform(val_df)
-    X_test = pipeline.transform(test_df)
+    splits_dir = paths.splits_dir
+    X_val = load_features(splits_dir, "val")
+    X_test = load_features(splits_dir, "test")
 
     y_score_val: np.ndarray = model.predict_proba(X_val)[:, 1]
     y_score_test: np.ndarray = model.predict_proba(X_test)[:, 1]
@@ -180,6 +183,7 @@ def re_evaluate_all(
                 run_dir=run_dir,
                 val_df=val_df,
                 test_df=test_df,
+                paths=paths,
                 criterion=criterion,
                 overwrite=overwrite,
             )
