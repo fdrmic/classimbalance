@@ -208,7 +208,7 @@ def run_part_b_grid(paths: PathConfig | None = None) -> None:
 
     models = ["xgboost"]
     strategies = ["true_cost_weighting"]
-    prevalences = [0.001, 0.005, 0.01]
+    prevalences = [0.001]
 
     total = len(models) * len(strategies) * len(prevalences)
     logger.info("=" * 62)
