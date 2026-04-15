@@ -207,7 +207,7 @@ def run_part_b_grid(paths: PathConfig | None = None) -> None:
     paths.validate_splits()
 
     models = ["xgboost"]
-    strategies = ["smote_class_weighting"]
+    strategies = ["true_cost_weighting"]
     prevalences = [0.001, 0.005, 0.01]
 
     total = len(models) * len(strategies) * len(prevalences)
