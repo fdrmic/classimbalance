@@ -262,135 +262,193 @@ def run_threshold_optimization(
     lambda_fp: float = 0.05,
     n_thresholds: int = 1000,
 ) -> dict:
-    """Run Strategy 6 threshold optimization and persist outputs."""
-    # 1) Select baseline model (val PR-AUC)
-    ref_run = _select_reference_run(paths.outputs_dir)
-    run_id = ref_run.name
+    """Run Strategy 6 threshold optimization for all three baseline prevalences."""
+    # 1) Locate baseline runs (p001/p005/p010)
+    runs = _iter_completed_baseline_runs(paths.outputs_dir)
+    if not runs:
+        fallback_dir = paths.outputs_dir.parent / "runs"
+        if fallback_dir != paths.outputs_dir and fallback_dir.exists():
+            logger.warning(
+                f"No completed baseline runs found under {paths.outputs_dir}. "
+                f"Falling back to {fallback_dir}."
+            )
+            runs = _iter_completed_baseline_runs(fallback_dir)
 
-    # 2) Load model + data (features from cache, labels from split parquet)
-    model = joblib.load(ref_run / "model.pkl")
+    wanted_tags = ("__p001__", "__p005__", "__p010__")
+    runs = [r for r in runs if any(tag in r.name for tag in wanted_tags)]
+    if not runs:
+        raise FileNotFoundError(
+            "No completed xgboost baseline runs found for p001/p005/p010. "
+            "Expected folders like xgboost__baseline__p001__* with model.pkl, run_config.json, metrics_val.json."
+        )
+
+    # If there are multiple runs per prevalence tag, keep the one with highest pr_auc_val
+    chosen_by_tag: dict[str, Path] = {}
+    for tag in wanted_tags:
+        candidates = [r for r in runs if tag in r.name]
+        if not candidates:
+            continue
+        scored: list[tuple[float, Path]] = []
+        for c in candidates:
+            s = _load_pr_auc_val(c)
+            if s is not None:
+                scored.append((s, c))
+        if scored:
+            scored.sort(key=lambda t: t[0], reverse=True)
+            chosen_by_tag[tag] = scored[0][1]
+        else:
+            chosen_by_tag[tag] = sorted(candidates)[-1]
+
+    selected_runs = [chosen_by_tag[t] for t in wanted_tags if t in chosen_by_tag]
+    logger.info(f"Selected {len(selected_runs)} baseline runs for Strategy 6: {[r.name for r in selected_runs]}")
+
+    # 2) Load shared data once (features from cache, labels from split parquet)
     X_val = load_features(paths.splits_dir, "val")
     X_test = load_features(paths.splits_dir, "test")
     y_val, y_test = _load_labels(paths)
 
-    logger.info(f"Scoring with reference baseline model: {run_id}")
-    y_score_val: np.ndarray = model.predict_proba(X_val)[:, 1]
-    y_score_test: np.ndarray = model.predict_proba(X_test)[:, 1]
+    all_infos: dict[str, dict] = {}
+    summary_rows: list[dict[str, object]] = []
 
-    # 3) Threshold search on validation
-    tau_star, val_details, selection_criterion = _select_threshold(
-        y_val=y_val,
-        y_score_val=y_score_val,
-        precision_constraint=precision_constraint,
-        lambda_fp=lambda_fp,
-        n_thresholds=n_thresholds,
-    )
-    logger.info(
-        f"Selected tau*={tau_star:.6f} "
-        f"| val_precision={val_details['precision']:.4f} "
-        f"| val_recall={val_details['recall']:.4f} "
-        f"| val_f1={val_details['f1']:.4f} "
-        f"| val_U={val_details['utility']:.2f}"
-    )
+    for ref_run in selected_runs:
+        run_id = ref_run.name
+        logger.info("-" * 62)
+        logger.info(f"STRATEGY 6 — processing baseline run: {run_id}")
 
-    # 4) Evaluate tau* on validation and test using existing metric utility
-    m_val = compute_all_metrics(y_val, y_score_val, threshold=tau_star, split="val_strategy6")
-    m_test = compute_all_metrics(y_test, y_score_test, threshold=tau_star, split="test_strategy6")
+        model = joblib.load(ref_run / "model.pkl")
+        y_score_val: np.ndarray = model.predict_proba(X_val)[:, 1]
+        y_score_test: np.ndarray = model.predict_proba(X_test)[:, 1]
 
-    # Load Part A optimized threshold from threshold_info.json
-    thresh_info_path = ref_run / "threshold_info.json"
-    if thresh_info_path.exists():
-        with thresh_info_path.open(encoding="utf-8") as fh:
-            thresh_info = json.load(fh)
-        baseline_thr = float(thresh_info.get("optimal_threshold", 0.5))
-        logger.info(f"Loaded Part A optimized threshold: {baseline_thr:.6f}")
-    else:
-        baseline_thr = 0.5
-        logger.warning("threshold_info.json not found; using baseline_thr=0.5")
-    m_test_baseline = compute_all_metrics(
-        y_test, y_score_test, threshold=baseline_thr, split="test_baseline_part_a_thresh"
-    )
+        # 3) Threshold search on validation
+        tau_star, val_details, selection_criterion = _select_threshold(
+            y_val=y_val,
+            y_score_val=y_score_val,
+            precision_constraint=precision_constraint,
+            lambda_fp=lambda_fp,
+            n_thresholds=n_thresholds,
+        )
+        logger.info(
+            f"Selected tau*={tau_star:.6f} "
+            f"| val_precision={val_details['precision']:.4f} "
+            f"| val_recall={val_details['recall']:.4f} "
+            f"| val_f1={val_details['f1']:.4f} "
+            f"| val_U={val_details['utility']:.2f}"
+        )
 
-    # 5) Persist outputs
-    out_dir = paths.outputs_dir.parent / "strategy6"
-    _save_metrics_files(m_val, out_dir, "metrics_strategy6_val")
-    _save_metrics_files(m_test, out_dir, "metrics_strategy6_test")
+        # 4) Evaluate tau* on validation and test
+        m_val = compute_all_metrics(y_val, y_score_val, threshold=tau_star, split="val_strategy6")
+        m_test = compute_all_metrics(y_test, y_score_test, threshold=tau_star, split="test_strategy6")
 
-    tp_b = int(m_test_baseline["tp"])
-    fp_b = int(m_test_baseline["fp"])
-    tp_s = int(m_test["tp"])
-    fp_s = int(m_test["fp"])
-    delta_tp = tp_s - tp_b
-    delta_fp = fp_s - fp_b
+        # Baseline operating point: Part A optimized threshold if available
+        thresh_info_path = ref_run / "threshold_info.json"
+        if thresh_info_path.exists():
+            with thresh_info_path.open(encoding="utf-8") as fh:
+                thresh_info = json.load(fh)
+            baseline_thr = float(thresh_info.get("optimal_threshold", 0.5))
+            logger.info(f"Loaded Part A optimized threshold: {baseline_thr:.6f}")
+        else:
+            baseline_thr = 0.5
+            logger.warning("threshold_info.json not found; using baseline_thr=0.5")
 
-    fp_per_tp_b = (fp_b / tp_b) if tp_b > 0 else float("inf")
-    fp_per_tp_s = (fp_s / tp_s) if tp_s > 0 else float("inf")
+        m_test_baseline = compute_all_metrics(
+            y_test, y_score_test, threshold=baseline_thr, split="test_baseline_part_a_thresh"
+        )
 
-    info = {
-        "selected_baseline_run_id": run_id,
-        "optimal_threshold": float(tau_star),
-        "selection_criterion": selection_criterion,
-        "lambda_fp": float(lambda_fp),
-        "precision_constraint": float(precision_constraint),
-        "threshold_grid": {
-            "min": 0.0,
-            "max": 0.15,
-            "n_thresholds": int(n_thresholds),
-            "spacing": "linear",
-        },
-        "val_metrics_at_tau_star": m_val,
-        "test_metrics_at_tau_star": m_test,
-        "baseline_comparison_test": {
-            "baseline_threshold": float(baseline_thr),
-            "baseline": {
-                "precision": float(m_test_baseline["precision"]),
-                "recall": float(m_test_baseline["recall"]),
-                "f1": float(m_test_baseline["f1"]),
-                "tp": tp_b,
-                "fp": fp_b,
+        # 5) Persist outputs per run
+        out_dir = paths.outputs_dir.parent / "strategy6" / run_id
+        _save_metrics_files(m_val, out_dir, "metrics_strategy6_val")
+        _save_metrics_files(m_test, out_dir, "metrics_strategy6_test")
+
+        tp_b = int(m_test_baseline["tp"])
+        fp_b = int(m_test_baseline["fp"])
+        tp_s = int(m_test["tp"])
+        fp_s = int(m_test["fp"])
+        delta_tp = tp_s - tp_b
+        delta_fp = fp_s - fp_b
+
+        fp_per_tp_b = (fp_b / tp_b) if tp_b > 0 else float("inf")
+        fp_per_tp_s = (fp_s / tp_s) if tp_s > 0 else float("inf")
+
+        info = {
+            "selected_baseline_run_id": run_id,
+            "optimal_threshold": float(tau_star),
+            "selection_criterion": selection_criterion,
+            "lambda_fp": float(lambda_fp),
+            "precision_constraint": float(precision_constraint),
+            "threshold_grid": {
+                "min": 0.0,
+                "max": 0.15,
+                "n_thresholds": int(n_thresholds),
+                "spacing": "linear",
             },
-            "strategy6": {
-                "precision": float(m_test["precision"]),
-                "recall": float(m_test["recall"]),
-                "f1": float(m_test["f1"]),
-                "tp": tp_s,
-                "fp": fp_s,
+            "val_metrics_at_tau_star": m_val,
+            "test_metrics_at_tau_star": m_test,
+            "baseline_comparison_test": {
+                "baseline_threshold": float(baseline_thr),
+                "baseline": {
+                    "precision": float(m_test_baseline["precision"]),
+                    "recall": float(m_test_baseline["recall"]),
+                    "f1": float(m_test_baseline["f1"]),
+                    "tp": tp_b,
+                    "fp": fp_b,
+                },
+                "strategy6": {
+                    "precision": float(m_test["precision"]),
+                    "recall": float(m_test["recall"]),
+                    "f1": float(m_test["f1"]),
+                    "tp": tp_s,
+                    "fp": fp_s,
+                },
+                "delta": {
+                    "tp": int(delta_tp),
+                    "fp": int(delta_fp),
+                },
+                "fp_per_tp": {
+                    "baseline": float(fp_per_tp_b),
+                    "strategy6": float(fp_per_tp_s),
+                },
             },
-            "delta": {
-                "tp": int(delta_tp),
-                "fp": int(delta_fp),
-            },
-            "fp_per_tp": {
-                "baseline": float(fp_per_tp_b),
-                "strategy6": float(fp_per_tp_s),
-            },
-        },
-    }
+        }
 
-    info_path = out_dir / "threshold_info_strategy6.json"
-    with info_path.open("w", encoding="utf-8") as fh:
-        json.dump(info, fh, indent=2)
-    logger.info(f"Saved -> {info_path}")
+        info_path = out_dir / "threshold_info_strategy6.json"
+        with info_path.open("w", encoding="utf-8") as fh:
+            json.dump(info, fh, indent=2)
+        logger.info(f"Saved -> {info_path}")
 
-    # 6) Console summary
+        all_infos[run_id] = info
+
+        summary_rows.append(
+            {
+                "run_id": run_id,
+                "baseline_thr": float(baseline_thr),
+                "tau_star": float(tau_star),
+                "baseline_precision": float(m_test_baseline["precision"]),
+                "baseline_recall": float(m_test_baseline["recall"]),
+                "baseline_f1": float(m_test_baseline["f1"]),
+                "baseline_tp": tp_b,
+                "baseline_fp": fp_b,
+                "strategy6_precision": float(m_test["precision"]),
+                "strategy6_recall": float(m_test["recall"]),
+                "strategy6_f1": float(m_test["f1"]),
+                "strategy6_tp": tp_s,
+                "strategy6_fp": fp_s,
+                "delta_tp": int(delta_tp),
+                "delta_fp": int(delta_fp),
+                "baseline_fp_per_tp": float(fp_per_tp_b),
+                "strategy6_fp_per_tp": float(fp_per_tp_s),
+            }
+        )
+
+    # Final summary table
+    summary_df = pd.DataFrame(summary_rows)
     logger.info("=" * 62)
-    logger.info("STRATEGY 6 — THRESHOLD OPTIMIZATION SUMMARY (test)")
-    logger.info(f"  baseline run id : {run_id}")
-    logger.info(f"  tau*            : {tau_star:.6f}  (selected on validation)")
-    logger.info(
-        f"  baseline@part_a : P={m_test_baseline['precision']:.4f} "
-        f"R={m_test_baseline['recall']:.4f} F1={m_test_baseline['f1']:.4f} "
-        f"TP={tp_b:,} FP={fp_b:,} FP/TP={fp_per_tp_b:.2f}"
-    )
-    logger.info(
-        f"  strategy6@tau*  : P={m_test['precision']:.4f} "
-        f"R={m_test['recall']:.4f} F1={m_test['f1']:.4f} "
-        f"TP={tp_s:,} FP={fp_s:,} FP/TP={fp_per_tp_s:.2f}"
-    )
-    logger.info(f"  deltas          : ΔTP={delta_tp:+,}  ΔFP={delta_fp:+,}")
+    logger.info("STRATEGY 6 — SUMMARY ACROSS BASELINE RUNS (test)")
+    if not summary_df.empty:
+        with pd.option_context("display.max_colwidth", 80, "display.width", 200):
+            print(summary_df.to_string(index=False))
     logger.info("=" * 62)
 
-    return info
+    return {"runs": all_infos, "summary": summary_rows}
 
 
 def main() -> None:
