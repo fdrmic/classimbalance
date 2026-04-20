@@ -1,0 +1,9 @@
+model,strategy,target_prevalence,pr_auc_test,recall_test_thresh,precision_test_thresh,f1_test_thresh,weighted_acc_test,tp_test_thresh,fp_test_thresh
+xgboost,baseline,0.100%,0.1079,0.2393,0.0909,0.1318,0.6187,"4,710","47,091"
+xgboost,random_undersampling,0.500%,0.0976,0.2139,0.0970,0.1334,0.6062,"4,210","39,209"
+xgboost,class_weighting,1.000%,0.0752,0.2407,0.0937,0.1349,0.6195,"4,738","45,840"
+xgboost,smote,0.100%,0.0719,0.3667,0.0385,0.0697,0.6799,"7,218","180,184"
+random_forest,random_undersampling,1.000%,0.0582,0.2336,0.0795,0.1186,0.6158,"4,599","53,272"
+random_forest,smote,1.000%,0.0484,0.2678,0.0629,0.1018,0.6324,"5,272","78,575"
+random_forest,class_weighting,1.000%,0.0377,0.1861,0.0685,0.1002,0.5921,"3,664","49,787"
+random_forest,baseline,1.000%,0.0260,0.1992,0.0366,0.0619,0.5977,"3,922","103,128"
