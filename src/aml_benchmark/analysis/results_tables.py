@@ -77,50 +77,104 @@ def _to_markdown_table(df: pd.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _table1_part_a_summary(part_a: pd.DataFrame) -> pd.DataFrame:
-    # Filter: strategy != 'adasyn'
+def _table1_base(part_a: pd.DataFrame) -> pd.DataFrame:
+    """Return the 24 Part A conditions (no ADASYN), sorted for table output."""
     df = part_a[part_a["strategy"].astype(str) != "adasyn"].copy()
-
-    # Keep best prevalence per strategy per model (highest pr_auc_test)
     df["pr_auc_test"] = df["pr_auc_test"].astype(float)
     df["target_prevalence"] = df["target_prevalence"].astype(float)
+    df["_model_order"] = df["model"].map({"xgboost": 0, "random_forest": 1}).fillna(99).astype(int)
+    df = df.sort_values(
+        ["_model_order", "strategy", "target_prevalence"],
+        ascending=[True, True, True],
+    ).drop(columns=["_model_order"])
+    return df.reset_index(drop=True)
 
-    key = ["model", "strategy"]
-    best = (
-        df.sort_values(["model", "strategy", "pr_auc_test"], ascending=[True, True, False])
-        .groupby(key, as_index=False)
-        .first()
+
+def _table1a_main(part_a: pd.DataFrame) -> pd.DataFrame:
+    """Table 1a — Main text (compact)."""
+    df = _table1_base(part_a)
+
+    # fp_per_tp = fp_test_thresh / tp_test_thresh
+    tp = df["tp_test_thresh"].astype(float)
+    fp = df["fp_test_thresh"].astype(float)
+    fp_per_tp = fp / tp.replace({0.0: pd.NA})
+
+    out = pd.DataFrame(
+        {
+            "model": df["model"].astype(str),
+            "strategy": df["strategy"].astype(str),
+            "target_prevalence": df["target_prevalence"].map(lambda v: f"{float(v):.3%}"),
+            "pr_auc_test": df["pr_auc_test"].map(lambda v: f"{float(v):.4f}"),
+            "precision_thresh": df["precision_test_thresh"].map(lambda v: f"{float(v):.4f}"),
+            "recall_thresh": df["recall_test_thresh"].map(lambda v: f"{float(v):.4f}"),
+            "f1_thresh": df["f1_test_thresh"].map(lambda v: f"{float(v):.4f}"),
+            "fp_per_tp": fp_per_tp.map(lambda v: "" if pd.isna(v) else f"{float(v):.2f}"),
+        }
     )
+    return out
+
+
+def _table1b_appendix(part_a: pd.DataFrame) -> pd.DataFrame:
+    """Table 1b — Appendix (complete)."""
+    df = _table1_base(part_a)
 
     cols = [
         "model",
         "strategy",
         "target_prevalence",
         "pr_auc_test",
-        "recall_test_thresh",
+        # Default threshold (0.5)
+        "precision_test",
+        "recall_test",
+        "f1_test",
+        "weighted_accuracy_test",
+        "tp_test",
+        "fp_test",
+        # Optimised threshold (selected on val, applied to test)
         "precision_test_thresh",
+        "recall_test_thresh",
         "f1_test_thresh",
         "weighted_accuracy_test_thresh",
         "tp_test_thresh",
         "fp_test_thresh",
     ]
-    out = best[cols].copy()
+    out = df[cols].copy()
 
-    # Formatting for tables
     out["target_prevalence"] = out["target_prevalence"].map(lambda v: f"{float(v):.3%}")
-    out = out.rename(columns={"weighted_accuracy_test_thresh": "weighted_acc_test"})
-    for c in ["pr_auc_test", "recall_test_thresh", "precision_test_thresh", "f1_test_thresh", "weighted_acc_test"]:
+    out = out.rename(
+        columns={
+            # Default threshold (0.5)
+            "precision_test": "precision_default",
+            "recall_test": "recall_default",
+            "f1_test": "f1_default",
+            "weighted_accuracy_test": "weighted_acc_default",
+            "tp_test": "tp_default",
+            "fp_test": "fp_default",
+            # Optimised threshold
+            "precision_test_thresh": "precision_thresh",
+            "recall_test_thresh": "recall_thresh",
+            "f1_test_thresh": "f1_thresh",
+            "weighted_accuracy_test_thresh": "weighted_acc_thresh",
+            "tp_test_thresh": "tp_thresh",
+            "fp_test_thresh": "fp_thresh",
+        }
+    )
+
+    for c in [
+        "pr_auc_test",
+        "precision_default",
+        "recall_default",
+        "f1_default",
+        "weighted_acc_default",
+        "precision_thresh",
+        "recall_thresh",
+        "f1_thresh",
+        "weighted_acc_thresh",
+    ]:
         out[c] = out[c].map(lambda v: f"{float(v):.4f}")
-    for c in ["tp_test_thresh", "fp_test_thresh"]:
+    for c in ["tp_default", "fp_default", "tp_thresh", "fp_thresh"]:
         out[c] = out[c].map(lambda v: f"{int(float(v)):,}")
 
-    # Sort order: xgboost first, then random_forest; within model by pr_auc_test descending
-    out["_sort_pr"] = best["pr_auc_test"].values
-    out["_model_order"] = out["model"].map({"xgboost": 0, "random_forest": 1}).fillna(99).astype(int)
-    out = (
-        out.sort_values(["_model_order", "_sort_pr"], ascending=[True, False])
-        .drop(columns=["_sort_pr", "_model_order"])
-    )
     return out.reset_index(drop=True)
 
 
@@ -222,8 +276,11 @@ def main() -> None:
     part_a = pd.read_csv(part_a_path)
     info = _read_json(strategy6_path)
 
-    t1 = _table1_part_a_summary(part_a)
-    _write_csv_and_md(t1, tables_dir / "table1_part_a_summary")
+    t1a = _table1a_main(part_a)
+    _write_csv_and_md(t1a, tables_dir / "table1a_main_results")
+
+    t1b = _table1b_appendix(part_a)
+    _write_csv_and_md(t1b, tables_dir / "table1b_appendix_results")
 
     t2 = _table2_strategy6_comparison(info)
     _write_csv_and_md(t2, tables_dir / "table2_strategy6_comparison")
