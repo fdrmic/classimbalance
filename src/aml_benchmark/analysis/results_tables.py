@@ -2,15 +2,21 @@
 
 Inputs (expected under the repository `results/` directory):
   - results/part_a_summary_v2.csv
-  - results/threshold_info_strategy6.json
+  - results/threshold_info_strategy6.json                 (legacy, optional)
   - results/feature_importance_xgboost_mean.csv
   - results/feature_importance_rf_mean.csv
+  - results/part_b_multi_threshold_summary.json           (Part B multi)
+
+Plus per-run output folders for the Part B multi-strategy threshold runs:
+  - outputs/part_b_thresholds/<run_id>/<strategy>/threshold_info.json
 
 Outputs (written to results/tables/ as both .csv and .md):
-  - table1_part_a_summary
-  - table2_strategy6_comparison
+  - table1a_main_results
+  - table1b_appendix_results
+  - table2_strategy6_comparison        (legacy, only if strategy6 input exists)
   - table3_feature_importance_xgboost
   - table4_feature_importance_rf
+  - table5_part_b_multi_threshold      (Part A reference + 3 strategies = 4 rows)
 
 CLI:
     python -m aml_benchmark.analysis.results_tables
@@ -233,6 +239,155 @@ def _table2_strategy6_comparison(info: dict) -> pd.DataFrame:
     return df
 
 
+def _load_part_b_multi_records(
+    summary_path: Path | None,
+    part_b_outputs_dir: Path | None,
+) -> tuple[dict, list[dict]]:
+    """Return (part_a_reference, strategy_records) for Part B multi run.
+
+    Preference order:
+    1. ``results/part_b_multi_threshold_summary.json`` (canonical, written by
+       the threshold optimizer).
+    2. Fallback: scan ``outputs/part_b_thresholds/<run_id>/<strategy>/threshold_info.json``
+       and reconstruct the structure.
+    """
+    if summary_path is not None and summary_path.exists():
+        summary = _read_json(summary_path)
+        return summary.get("part_a_reference", {}) or {}, list(
+            summary.get("records", []) or []
+        )
+
+    if part_b_outputs_dir is None or not part_b_outputs_dir.exists():
+        raise FileNotFoundError(
+            "Neither part_b_multi_threshold_summary.json nor "
+            f"outputs/part_b_thresholds/ found ({part_b_outputs_dir}). "
+            "Run `python -m aml_benchmark.experiments.threshold_optimizer` first."
+        )
+
+    run_dirs = [d for d in sorted(part_b_outputs_dir.iterdir()) if d.is_dir()]
+    if not run_dirs:
+        raise FileNotFoundError(
+            f"No run subdirectories found under {part_b_outputs_dir}."
+        )
+
+    run_dir = run_dirs[0]
+    records: list[dict] = []
+    part_a_ref: dict = {}
+    for strategy_dir in sorted(run_dir.iterdir()):
+        info_path = strategy_dir / "threshold_info.json"
+        if not info_path.exists():
+            continue
+        info = _read_json(info_path)
+        records.append(info)
+        if not part_a_ref:
+            part_a_ref = info.get("part_a_reference", {}) or {}
+    return part_a_ref, records
+
+
+def _table5_part_b_multi_threshold(
+    part_a_reference: dict,
+    records: list[dict],
+) -> tuple[pd.DataFrame, str]:
+    """Build the Part B multi-threshold comparison table.
+
+    Returns (dataframe, header_note).  4 rows: 1 Part A reference + 3 strategies.
+    """
+    if not part_a_reference:
+        raise ValueError("Empty part_a_reference passed to Table 5 builder.")
+    if not records:
+        raise ValueError("No strategy records passed to Table 5 builder.")
+
+    rows: list[dict] = []
+    rows.append(
+        {
+            "Strategy": "Part A Baseline (F1-optimal)",
+            "Threshold": float(part_a_reference["threshold"]),
+            "Precision": float(part_a_reference["precision"]),
+            "Recall": float(part_a_reference["recall"]),
+            "F1": float(part_a_reference["f1"]),
+            "F2": float(part_a_reference["f2"]),
+            "FP": int(part_a_reference["fp"]),
+            "FP_delta": 0,
+            "F1_delta": 0.0,
+            "PR-AUC": float(part_a_reference["pr_auc"]),
+        }
+    )
+
+    for r in records:
+        rows.append(
+            {
+                "Strategy": str(r["strategy_type"]),
+                "Threshold": float(r["threshold_value"]),
+                "Precision": float(r["test_precision"]),
+                "Recall": float(r["test_recall"]),
+                "F1": float(r["test_f1"]),
+                "F2": float(r["test_f2"]),
+                "FP": int(r["test_fp"]),
+                "FP_delta": int(r["delta_fp_vs_part_a_f1opt"]),
+                "F1_delta": float(r["delta_f1_vs_part_a_f1opt"]),
+                "PR-AUC": float(r["test_pr_auc"]),
+            }
+        )
+
+    # Highlights only over the strategy rows (skip reference row at index 0)
+    strategy_slice = pd.DataFrame(rows[1:])
+    highlight_idx: dict[int, list[str]] = {i: [] for i in range(1, len(rows))}
+    if not strategy_slice.empty:
+        min_fp_pos = int(strategy_slice["FP"].astype(int).idxmin())
+        max_recall_pos = int(strategy_slice["Recall"].astype(float).idxmax())
+        max_f1_pos = int(strategy_slice["F1"].astype(float).idxmax())
+        # idxmin/idxmax above operate on a 0-based slice — translate to row index
+        highlight_idx[min_fp_pos + 1].append("min-FP")
+        highlight_idx[max_recall_pos + 1].append("max-Recall")
+        highlight_idx[max_f1_pos + 1].append("max-F1")
+
+    fmt_rows: list[dict] = []
+    for i, r in enumerate(rows):
+        suffix = (
+            "  *" + " *".join(highlight_idx[i])
+            if highlight_idx.get(i)
+            else ""
+        )
+        fmt_rows.append(
+            {
+                "Strategy": r["Strategy"] + suffix,
+                "Threshold": f"{r['Threshold']:.6f}",
+                "Precision": f"{r['Precision']:.4f}",
+                "Recall": f"{r['Recall']:.4f}",
+                "F1": f"{r['F1']:.4f}",
+                "F2": f"{r['F2']:.4f}",
+                "FP": f"{int(r['FP']):,}",
+                "FP_delta": ("0" if i == 0 else f"{int(r['FP_delta']):+,}"),
+                "F1_delta": ("0.0000" if i == 0 else f"{float(r['F1_delta']):+.4f}"),
+                "PR-AUC": f"{r['PR-AUC']:.6f}",
+            }
+        )
+
+    df = pd.DataFrame(fmt_rows)
+
+    header_note = (
+        f"Part A reference threshold (F1-optimal): "
+        f"{float(part_a_reference['threshold']):.6f} | "
+        f"Part A reference run: {part_a_reference.get('selected_baseline_run_id', '?')}\n"
+        "PR-AUC is identical across all rows by construction "
+        "(threshold-independent).\n"
+    )
+    return df, header_note
+
+
+def _write_table5(df: pd.DataFrame, header_note: str, out_stem: Path) -> None:
+    out_csv = out_stem.with_suffix(".csv")
+    out_md = out_stem.with_suffix(".md")
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    df.to_csv(out_csv, index=False)
+    print(f"Saved {out_csv}")
+
+    md = header_note + "\n" + _to_markdown_table(df)
+    out_md.write_text(md, encoding="utf-8")
+    print(f"Saved {out_md}")
+
+
 def _table3_feature_importance_top15(path: Path, title: str) -> pd.DataFrame:
     df = pd.read_csv(path)
 
@@ -262,19 +417,23 @@ def main() -> None:
     tables_dir = results_dir / "tables"
 
     part_a_path = results_dir / "part_a_summary_v2.csv"
-    strategy6_path = results_dir / "threshold_info_strategy6.json"
     xgb_fi_path = results_dir / "feature_importance_xgboost_mean.csv"
     rf_fi_path = results_dir / "feature_importance_rf_mean.csv"
 
-    for p in [part_a_path, strategy6_path, xgb_fi_path, rf_fi_path]:
+    # Required inputs
+    for p in [part_a_path, xgb_fi_path, rf_fi_path]:
         if not p.exists():
             raise FileNotFoundError(
                 f"Missing required input file: {p}\n"
                 "Expected all inputs under the repo `results/` directory."
             )
 
+    # Optional inputs
+    strategy6_path = results_dir / "threshold_info_strategy6.json"
+    part_b_multi_summary = results_dir / "part_b_multi_threshold_summary.json"
+    part_b_outputs_dir = root / "outputs" / "part_b_thresholds"
+
     part_a = pd.read_csv(part_a_path)
-    info = _read_json(strategy6_path)
 
     t1a = _table1a_main(part_a)
     _write_csv_and_md(t1a, tables_dir / "table1a_main_results")
@@ -282,14 +441,32 @@ def main() -> None:
     t1b = _table1b_appendix(part_a)
     _write_csv_and_md(t1b, tables_dir / "table1b_appendix_results")
 
-    t2 = _table2_strategy6_comparison(info)
-    _write_csv_and_md(t2, tables_dir / "table2_strategy6_comparison")
+    if strategy6_path.exists():
+        info = _read_json(strategy6_path)
+        t2 = _table2_strategy6_comparison(info)
+        _write_csv_and_md(t2, tables_dir / "table2_strategy6_comparison")
+    else:
+        print(
+            f"[skip] {strategy6_path.name} not found — "
+            "table2_strategy6_comparison not generated."
+        )
 
     t3 = _table3_feature_importance_top15(xgb_fi_path, title="XGBoost feature importance")
     _write_csv_and_md(t3, tables_dir / "table3_feature_importance_xgboost")
 
     t4 = _table3_feature_importance_top15(rf_fi_path, title="Random Forest feature importance")
     _write_csv_and_md(t4, tables_dir / "table4_feature_importance_rf")
+
+    # Table 5 — Part B multi-threshold comparison (optional but preferred)
+    try:
+        part_a_ref, records = _load_part_b_multi_records(
+            summary_path=part_b_multi_summary,
+            part_b_outputs_dir=part_b_outputs_dir,
+        )
+        t5, header = _table5_part_b_multi_threshold(part_a_ref, records)
+        _write_table5(t5, header, tables_dir / "table5_part_b_multi_threshold")
+    except FileNotFoundError as exc:
+        print(f"[skip] table5_part_b_multi_threshold: {exc}")
 
 
 if __name__ == "__main__":
