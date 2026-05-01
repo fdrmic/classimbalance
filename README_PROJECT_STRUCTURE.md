@@ -33,6 +33,10 @@
 
 > *How do different class-imbalance mitigation strategies affect detection performance in AML transaction monitoring under extreme class imbalance?*
 
+**Sub-Question 4 (Part B, revised).** *Does a sampling strategy that is **explicitly informed by the failure modes observed in Part A** — namely (a) the predictability ceiling of the XGBoost Baseline at the natural prevalence of ~0.05 %, (b) the operational efficiency of Random Undersampling, and (c) the false-positive inflation produced by SMOTE/ADASYN — recover or surpass the operational characteristics of the best Part A configurations on the held-out test split, without modifying the model family, hyperparameters, splits, or features?*
+
+The phrase **"informed by"** is operationalised in `docs/part_b_pai_hnu_design.md`: each design decision in PAI-HNU traces back to one specific Part A finding (Mapping Table §3 of that document).
+
 ### Project framing
 
 The project implements a reproducible academic benchmark for **binary transaction-level AML classification** on the **IBM AMLworld synthetic dataset** (Altman et al., 2023, NeurIPS — [arXiv:2306.16424](https://arxiv.org/abs/2306.16424)). The active production variant is **Low-Illicit Large (LI-Large)** with a natural training-set prevalence of **0.052 %** (≈ 1 illicit per 1,930 transactions).
@@ -43,8 +47,9 @@ This is **not** a production fraud-detection system. It is a controlled experime
 
 | Part | Scope | Grid | Status |
 |---|---|---|---|
-| **Part A** | Five canonical mitigation strategies × two model families × three target prevalences | 30 runs | Complete |
-| **Part B** | (i) Purpose-designed sixth strategy `true_cost_weighting`. (ii) Multi-strategy threshold optimisation on the Part A XGBoost Baseline. | 6 + 3 evaluations | Complete |
+| **Part A** | Five canonical mitigation strategies × two model families × three target prevalences | 30 runs | **Complete (approved)** |
+| **Part B (primary)** | Strategy 6 — **Part-A-Informed Hard-Negative Undersampling (PAI-HNU)**: XGBoost trained on a constructed training set that retains all positives plus a 50 / 25 / 25 split of (a) baseline-hard negatives, (b) temporal-stratified random negatives, (c) global random negatives. | 3 runs (one per target prevalence) | **In progress** |
+| **Part B (auxiliary / exploratory)** | (i) `true_cost_weighting` — class-weighting using the empirical n_neg / n_pos ratio. (ii) Multi-strategy threshold optimisation on the Part A XGBoost Baseline (`precision_constrained`, `f1_max`, `f2_max`). Reported as supporting evidence — not the main contribution. | 6 + 3 evaluations | Complete |
 
 **Five canonical strategies (Part A):**
 
@@ -82,8 +87,10 @@ This is **not** a production fraud-detection system. It is a controlled experime
 | Grid runner (resume + auto-backup to Drive) | `experiments/grid_runner.py` |
 | Post-hoc F1-optimal threshold re-evaluation | `experiments/re_evaluate.py` |
 | Result aggregator → leaderboard CSV | `experiments/aggregate.py` |
-| Part B multi-strategy threshold optimisation (3 strategies, no retraining) | `experiments/threshold_optimizer.py` |
-| Thesis-table generator (CSV + MD output) | `analysis/results_tables.py` |
+| Part B multi-strategy threshold optimisation (3 strategies, no retraining) — *auxiliary* | `experiments/threshold_optimizer.py` |
+| **Part B PAI-HNU sampler (Strategy 6 — primary)** | `sampling/hard_negative_undersampling.py` |
+| **Part B PAI-HNU score cache + runner** | `experiments/score_baseline_train.py`, `experiments/run_part_b_pai_hnu.py` |
+| Thesis-table generator (CSV + MD output, incl. Table 6 PAI-HNU vs. Part A) | `analysis/results_tables.py` |
 | Audit notebook (data integrity check) | `notebooks/01_data_check.ipynb` |
 | Production run notebooks | `aml_large_run.ipynb`, `aml_part_b_multi_threshold_run.ipynb` |
 
@@ -113,8 +120,10 @@ classimbalance/
 │   ├── split.yaml                     # Train/val/test ratios (70/15/15)
 │   ├── experiment.yaml                # Global random_seed = 42
 │   ├── benchmark.yaml                 # Part A grid: 5×2×3 = 30 runs
-│   ├── benchmark_part_b.yaml          # Part B Strategy 6 grid (true_cost_weighting)
-│   └── benchmark_part_b_multi.yaml    # Part B Multi-Threshold (precision/F1/F2)
+│   ├── benchmark_part_b.yaml          # Part B (auxiliary): true_cost_weighting grid
+│   ├── benchmark_part_b_multi.yaml    # Part B (auxiliary): Multi-Threshold (precision/F1/F2)
+│   ├── benchmark_part_b_pai_hnu.yaml  # Part B (primary): PAI-HNU shares, prevalences, baseline ref
+│   └── paths_large_part_b_pai_hnu.yaml # Path config for PAI-HNU outputs
 │
 ├── data/
 │   ├── raw/                           # Original IBM AML files (immutable)
@@ -144,18 +153,33 @@ classimbalance/
 │   │       ├── metrics_val_thresh.json/.csv   # @ F1-optimal threshold
 │   │       ├── metrics_test_thresh.json/.csv  # @ F1-optimal threshold
 │   │       └── threshold_info.json            # F1-optimal threshold metadata
-│   ├── runs_part_b_v3/                # Part B Strategy 6 runs
+│   ├── runs_part_b_v3/                # Part B (auxiliary): true_cost_weighting runs
+│   ├── runs_part_b_pai_hnu/           # Part B (PRIMARY): PAI-HNU full runs
+│   │   └── <run_id>/                  #   xgboost__pai_hnu__pXXX__<timestamp>/
+│   │       ├── run_config.json
+│   │       ├── sampling_manifest.json
+│   │       ├── model.pkl
+│   │       ├── metrics_{val,test}.{json,csv}        # @ default threshold 0.5
+│   │       └── metrics_{val,test}_opt.{json,csv}    # @ F1-optimal (val) threshold
+│   ├── runs_part_b_pai_hnu_smoke/     # Part B PAI-HNU mini-end-to-end smoke runs (--sample-n-train)
 │   ├── leaderboard_v2/
 │   │   └── part_a_summary_v2.csv      # 30-row leaderboard
-│   └── part_b_thresholds/             # Part B Multi-Threshold per-strategy outputs
+│   ├── leaderboard_part_b_pai_hnu/    # Part B PAI-HNU leaderboard (separate)
+│   └── part_b_thresholds/             # Part B (auxiliary) Multi-Threshold outputs
 │       └── <run_id>/<strategy>/{metrics_*.json,csv, threshold_info.json}
+│
+├── docs/
+│   └── part_b_pai_hnu_design.md       # SQ-4, mapping table, methodology, anti-leakage, success criteria
 │
 ├── results/                           # Inputs for thesis table generator
 │   ├── part_a_summary_v2.csv
 │   ├── part_b_multi_threshold_summary.json
 │   ├── feature_importance_xgboost_mean.csv
 │   ├── feature_importance_rf_mean.csv
-│   └── tables/                        # Auto-generated: table1a, table1b, table5, ...
+│   └── tables/                        # Auto-generated: table1a, table1b, table5, table6, ...
+│
+├── tests/
+│   └── test_pai_hnu_sampler.py        # 6 unit tests for the PAI-HNU sampler
 │
 ├── notebooks/
 │   └── 01_data_check.ipynb
@@ -180,7 +204,9 @@ classimbalance/
 | §10 Models | `models/factory.py` |
 | §11 Evaluation | `evaluation/metrics.py`, `experiments/re_evaluate.py` |
 | §12 Aggregation | `experiments/aggregate.py` |
-| §13 Part B | `experiments/threshold_optimizer.py`, `configs/benchmark_part_b*.yaml`, `analysis/results_tables.py` |
+| §13 Part B (auxiliary) | `experiments/threshold_optimizer.py`, `configs/benchmark_part_b*.yaml` |
+| §13 Part B (PAI-HNU, primary) | `sampling/hard_negative_undersampling.py`, `experiments/score_baseline_train.py`, `experiments/run_part_b_pai_hnu.py`, `configs/{benchmark_part_b_pai_hnu,paths_large_part_b_pai_hnu}.yaml`, `docs/part_b_pai_hnu_design.md` |
+| §13 Tables | `analysis/results_tables.py` |
 
 ### Configuration architecture
 
@@ -584,11 +610,60 @@ The thesis-table generator (`analysis/results_tables.py`) consumes this CSV plus
 
 ---
 
-## 13. Part B — Custom Strategy and Multi-Threshold Analysis
+## 13. Part B — PAI-HNU (primary) + auxiliary components
 
-Part B has two independent components.
+Part B answers Sub-Question 4 (see §1). The **primary** contribution is
+**Strategy 6 — Part-A-Informed Hard-Negative Undersampling (PAI-HNU)**;
+the previously-implemented `true_cost_weighting` and Multi-Threshold
+analyses remain in the codebase as **auxiliary / exploratory** evidence.
 
-### 13.1 Custom strategy (`true_cost_weighting`)
+### 13.0 Strategy 6 — PAI-HNU (primary contribution)
+
+**Idea.** Construct an XGBoost training set that retains all positives
+and selects negatives from three disjoint pools:
+
+* **50 % hard negatives** — top-scored majority rows from the Part A
+  XGBoost Baseline (capped at `20 × n_pos` per the design plan).
+* **25 % temporal-stratified random negatives** — uniform across 20 equal
+  blocks of the chronologically-sorted training split.
+* **25 % global random negatives** — uniform across the remainder.
+
+XGBoost is trained on this set with **identical hyperparameters to Part
+A** (`models/factory.py:_xgboost`); no `scale_pos_weight` is set —
+the imbalance is treated by the sampling, not by re-weighting.
+
+**Modules.**
+
+| Module | Responsibility |
+|---|---|
+| `sampling/hard_negative_undersampling.py` | Pure sampler: target counts, top-k via `np.argpartition`, temporal stratification, global random, no-overlap validator, manifest writer |
+| `experiments/score_baseline_train.py` | One-shot scoring of the Part-A Baseline on the **training split only**; produces `splits_v2/baseline_train_scores.parquet` (+ sha256 meta). Resolution order for the Baseline model: CLI → YAML → auto-discovery → explicit `--retrain-baseline` fallback |
+| `experiments/run_part_b_pai_hnu.py` | Orchestrator; runs one experiment per target prevalence; writes default- and F1-optimal-threshold metrics; supports `--sample-n-train K` for mini-end-to-end smoke runs |
+| `configs/benchmark_part_b_pai_hnu.yaml` | Shares (50/25/25), prevalences, hard-cap, baseline reference run id |
+| `configs/paths_large_part_b_pai_hnu.yaml` | Outputs/leaderboard isolation; reuses processed/splits/feature cache from Part A |
+| `tests/test_pai_hnu_sampler.py` | 6 deterministic unit tests on synthetic data |
+| `docs/part_b_pai_hnu_design.md` | SQ-4, mapping table (Part-A-Finding → Weakness → Design Decision), method, anti-leakage rules, success criteria, smoke protocol |
+
+**Anti-leakage.** Five explicit rules (AL1–AL5) documented in the design
+doc. Validation/test arrays are loaded but never passed to the sampler;
+the baseline scoring script reads only the training feature cache; the
+F1-optimal threshold is derived strictly on validation; the score cache
+is content-hashed and recorded in every manifest; smoke runs go to a
+separate output tree.
+
+**Success criteria.** A run is successful if **at least one** target
+prevalence satisfies *all three* of:
+
+1. `pr_auc_test ≥ 0.108` (does not destroy ranking quality vs. Baseline)
+2. `f1_test_thresh ≥ 0.95 × max F1 across the six Part A **XGBoost** anchor rows in Table 6` (Baseline best PR-AUC, RUS @0.5 %, Class Weighting @1.0 %, ADASYN best PR-AUC, SMOTE best PR-AUC, SMOTE best F1).
+3. `fp_per_tp(test_thresh) ≤ fp_per_tp(xgboost__random_undersampling__p010)`
+
+The six Part A anchor rows are selected programmatically in
+`analysis/results_tables.py` via `_select_part_a_xgboost_rows_for_table6`
+(fixed order; RUS @0.5 % and Class Weighting @1.0 % are mandatory).
+Table 6 additionally requires three non-smoke PAI-HNU runs at 0.1 %, 0.5 %, and 1.0 %.
+
+### 13.1 Auxiliary — `true_cost_weighting`
 
 **Idea.** Whereas `class_weighting` derives weights from a chosen `target_prevalence`, `true_cost_weighting` uses the **actual** observed training imbalance: `w1 = n_neg / n_pos ≈ 1930` for LI-Large. No resampling.
 
@@ -604,7 +679,7 @@ python -m aml_benchmark.experiments.grid_runner \
 
 Or programmatically: `grid_runner.run_part_b_grid(paths)`.
 
-### 13.2 Multi-strategy threshold optimisation (no retraining)
+### 13.2 Auxiliary — Multi-strategy threshold optimisation (no retraining)
 
 **Premise.** The Part A XGBoost Baseline produces a fixed score function. PR-AUC is then a property of the *entire* PR curve and is invariant under threshold selection. Three operating-point strategies are evaluated against the **same** scores:
 
@@ -739,7 +814,37 @@ python -m aml_benchmark.experiments.re_evaluate --paths configs/paths_large_v2.y
 python -m aml_benchmark.experiments.aggregate --paths configs/paths_large_v2.yaml
 ```
 
-### Part B — Strategy 6 (`true_cost_weighting`)
+### Part B — Strategy 6 (PRIMARY: PAI-HNU)
+
+```bash
+# 0. Run the unit tests (Level 1 of the smoke protocol)
+pytest tests/test_pai_hnu_sampler.py -v
+
+# 1. Score the Part-A baseline on the training split (one-shot, ~10–15 min on GPU)
+python -m aml_benchmark.experiments.score_baseline_train \
+    --paths configs/paths_large_part_b_pai_hnu.yaml
+
+# 1b. (Optional Drive override / explicit retrain fallback)
+python -m aml_benchmark.experiments.score_baseline_train \
+    --paths configs/paths_large_part_b_pai_hnu.yaml \
+    --baseline-model-path /content/drive/MyDrive/.../model.pkl
+
+python -m aml_benchmark.experiments.score_baseline_train \
+    --paths configs/paths_large_part_b_pai_hnu.yaml --retrain-baseline
+
+# 2. Mini end-to-end smoke (Level 3): 200K-row subsample, 0.01 prevalence,
+#    output goes to outputs/runs_part_b_pai_hnu_smoke/
+python -m aml_benchmark.experiments.run_part_b_pai_hnu \
+    --paths configs/paths_large_part_b_pai_hnu.yaml \
+    --target-prevalences 0.01 \
+    --sample-n-train 200000
+
+# 3. FULL runs (Level 4) — only after explicit user confirmation
+python -m aml_benchmark.experiments.run_part_b_pai_hnu \
+    --paths configs/paths_large_part_b_pai_hnu.yaml
+```
+
+### Part B — Auxiliary `true_cost_weighting`
 
 ```bash
 python -m aml_benchmark.experiments.grid_runner \
@@ -747,7 +852,7 @@ python -m aml_benchmark.experiments.grid_runner \
     --benchmark configs/benchmark_part_b.yaml
 ```
 
-### Part B — Multi-Threshold (no retraining)
+### Part B — Auxiliary Multi-Threshold (no retraining)
 
 ```bash
 # All three strategies on the Part A XGBoost Baseline
@@ -767,7 +872,8 @@ python -m aml_benchmark.experiments.threshold_optimizer --dry-run
 
 ```bash
 python -m aml_benchmark.analysis.results_tables
-# Outputs to results/tables/{table1a, table1b, table3, table4, table5}.{csv,md}
+# Outputs to results/tables/{table1a, table1b, table3, table4, table5, table6}.{csv,md}
+# table6 (PAI-HNU vs. Part A) is generated only if outputs/runs_part_b_pai_hnu/ contains runs.
 ```
 
 ### Single ad-hoc experiment (for debugging)

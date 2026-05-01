@@ -10,6 +10,9 @@ Inputs (expected under the repository `results/` directory):
 Plus per-run output folders for the Part B multi-strategy threshold runs:
   - outputs/part_b_thresholds/<run_id>/<strategy>/threshold_info.json
 
+And for Part B PAI-HNU runs (Strategy 6):
+  - outputs/runs_part_b_pai_hnu/<run_id>/{run_config,metrics_test,metrics_test_opt}.json
+
 Outputs (written to results/tables/ as both .csv and .md):
   - table1a_main_results
   - table1b_appendix_results
@@ -17,6 +20,7 @@ Outputs (written to results/tables/ as both .csv and .md):
   - table3_feature_importance_xgboost
   - table4_feature_importance_rf
   - table5_part_b_multi_threshold      (Part A reference + 3 strategies = 4 rows)
+  - table6_pai_hnu_vs_part_a           (6 Part A XGBoost reference rows + 3 PAI-HNU rows)
 
 CLI:
     python -m aml_benchmark.analysis.results_tables
@@ -411,6 +415,276 @@ def _table3_feature_importance_top15(path: Path, title: str) -> pd.DataFrame:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Table 6 — PAI-HNU vs. selected Part A XGBoost configurations
+# ---------------------------------------------------------------------------
+
+
+def _part_a_xgboost_series_to_raw_row(r: pd.Series, label: str) -> dict:
+    tp_count = float(r["tp_test_thresh"])
+    fp_count = float(r["fp_test_thresh"])
+    fppt = fp_count / tp_count if tp_count > 0 else float("inf")
+    return {
+        "group": "Part A",
+        "label": label,
+        "target_prevalence": float(r["target_prevalence"]),
+        "pr_auc": float(r["pr_auc_test"]),
+        "threshold": float(r["optimal_threshold"]),
+        "precision": float(r["precision_test_thresh"]),
+        "recall": float(r["recall_test_thresh"]),
+        "f1": float(r["f1_test_thresh"]),
+        "tp": int(tp_count),
+        "fp": int(fp_count),
+        "fp_per_tp": fppt,
+    }
+
+
+def _select_part_a_xgboost_rows_for_table6(part_a: pd.DataFrame) -> list[dict]:
+    """Part A XGBoost reference rows for Table 6 (fixed order).
+
+    1. Baseline — max ``pr_auc_test``; tie-break lowest prevalence (typically p001).
+    2. Random undersampling @ 0.5 %.
+    3. Class weighting @ 1.0 %.
+    4. ADASYN — best ``pr_auc_test`` among XGBoost ADASYN runs.
+    5. SMOTE — best ``pr_auc_test``.
+    6. SMOTE — best ``f1_test_thresh`` (second row; may duplicate 5 if same run wins both).
+    """
+    xgb = part_a[part_a["model"].astype(str) == "xgboost"].copy()
+    if xgb.empty:
+        raise ValueError("Table 6: no xgboost rows in part_a_summary.")
+
+    for col in ("pr_auc_test", "f1_test_thresh", "target_prevalence"):
+        xgb[col] = pd.to_numeric(xgb[col], errors="coerce")
+
+    raw_rows: list[dict] = []
+
+    bl = xgb[xgb["strategy"].astype(str) == "baseline"]
+    if bl.empty:
+        raise ValueError("Table 6: missing xgboost baseline rows.")
+    max_pr = bl["pr_auc_test"].max()
+    bl_ties = bl[bl["pr_auc_test"] == max_pr].sort_values("target_prevalence")
+    row = bl_ties.iloc[0]
+    identical_across = bl["pr_auc_test"].nunique(dropna=False) == 1
+    bl_lbl = (
+        f"xgboost baseline @{float(row['target_prevalence']):.1%} (best PR-AUC"
+        + (
+            "; identical across baseline p001/p005/p010"
+            if identical_across and len(bl) > 1
+            else ""
+        )
+        + ")"
+    )
+    raw_rows.append(_part_a_xgboost_series_to_raw_row(row, bl_lbl))
+
+    rus = xgb[
+        (xgb["strategy"].astype(str) == "random_undersampling")
+        & (xgb["target_prevalence"].round(6) == 0.005)
+    ]
+    if rus.empty:
+        raise ValueError(
+            "Table 6: missing xgboost random_undersampling @0.5%."
+        )
+    raw_rows.append(
+        _part_a_xgboost_series_to_raw_row(
+            rus.iloc[0],
+            "xgboost random_undersampling @0.5% (F1-opt)",
+        )
+    )
+
+    cw = xgb[
+        (xgb["strategy"].astype(str) == "class_weighting")
+        & (xgb["target_prevalence"].round(6) == 0.01)
+    ]
+    if cw.empty:
+        raise ValueError("Table 6: missing xgboost class_weighting @1.0%.")
+    raw_rows.append(
+        _part_a_xgboost_series_to_raw_row(
+            cw.iloc[0],
+            "xgboost class_weighting @1.0% (F1-opt)",
+        )
+    )
+
+    ada = xgb[xgb["strategy"].astype(str) == "adasyn"]
+    if ada.empty:
+        raise ValueError("Table 6: missing xgboost adasyn rows.")
+    row = ada.loc[int(ada["pr_auc_test"].idxmax())]
+    raw_rows.append(
+        _part_a_xgboost_series_to_raw_row(
+            row,
+            f"xgboost adasyn @{float(row['target_prevalence']):.1%} (best PR-AUC)",
+        )
+    )
+
+    sm = xgb[xgb["strategy"].astype(str) == "smote"]
+    if sm.empty:
+        raise ValueError("Table 6: missing xgboost smote rows.")
+    row_pr = sm.loc[int(sm["pr_auc_test"].idxmax())]
+    row_f1 = sm.loc[int(sm["f1_test_thresh"].idxmax())]
+    raw_rows.append(
+        _part_a_xgboost_series_to_raw_row(
+            row_pr,
+            f"xgboost smote @{float(row_pr['target_prevalence']):.1%} (best PR-AUC)",
+        )
+    )
+    raw_rows.append(
+        _part_a_xgboost_series_to_raw_row(
+            row_f1,
+            f"xgboost smote @{float(row_f1['target_prevalence']):.1%} (best F1)",
+        )
+    )
+
+    return raw_rows
+
+
+def _pai_hnu_runs_ordered_for_table6(pai_hnu_runs: list[dict]) -> list[dict]:
+    """PAI-HNU rows for 0.1 %, 0.5 %, 1.0 % in fixed order (subset of available)."""
+    wanted = (0.001, 0.005, 0.010)
+    by_tp: dict[float, dict] = {
+        round(float(r["target_prevalence"]), 6): r for r in pai_hnu_runs
+    }
+    return [by_tp[tp] for tp in wanted if tp in by_tp]
+
+
+def _load_pai_hnu_runs(pai_hnu_dir: Path) -> list[dict]:
+    """Read all PAI-HNU run sub-directories. Returns sorted by target_prevalence."""
+    if not pai_hnu_dir.exists():
+        return []
+    rows: list[dict] = []
+    for run_dir in sorted(pai_hnu_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        cfg_path = run_dir / "run_config.json"
+        m_test = run_dir / "metrics_test.json"
+        m_test_opt = run_dir / "metrics_test_opt.json"
+        if not (cfg_path.exists() and m_test.exists() and m_test_opt.exists()):
+            continue
+        cfg = _read_json(cfg_path)
+        if cfg.get("strategy") != "pai_hnu":
+            continue
+        if cfg.get("is_smoke", False):
+            continue
+        rows.append(
+            {
+                "run_id": cfg["run_id"],
+                "model": "xgboost",
+                "strategy": "pai_hnu",
+                "target_prevalence": float(cfg["target_prevalence"]),
+                "achieved_train_prevalence": float(
+                    cfg["achieved_train_prevalence"]
+                ),
+                "metrics_test": _read_json(m_test),
+                "metrics_test_opt": _read_json(m_test_opt),
+                "optimal_threshold_val": float(cfg.get("optimal_threshold_val", 0.5)),
+            }
+        )
+    rows.sort(key=lambda r: r["target_prevalence"])
+    return rows
+
+
+def _flag_pareto(rows: list[dict]) -> list[bool]:
+    """Mark rows that are not dominated on (max recall, max precision, min FP/TP).
+
+    A row R is Pareto-optimal iff no other row strictly improves on at
+    least one of the three objectives without being worse on any other.
+    """
+    n = len(rows)
+    flags = [True] * n
+    for i in range(n):
+        ri = rows[i]
+        for j in range(n):
+            if i == j:
+                continue
+            rj = rows[j]
+            # rj dominates ri  iff  rj is better-or-equal on all 3 and strictly
+            # better on at least one.
+            ge_recall = rj["recall"] >= ri["recall"]
+            ge_precision = rj["precision"] >= ri["precision"]
+            le_fppt = rj["fp_per_tp"] <= ri["fp_per_tp"]
+            strictly_better = (
+                rj["recall"] > ri["recall"]
+                or rj["precision"] > ri["precision"]
+                or rj["fp_per_tp"] < ri["fp_per_tp"]
+            )
+            if ge_recall and ge_precision and le_fppt and strictly_better:
+                flags[i] = False
+                break
+    return flags
+
+
+def _table6_pai_hnu_vs_part_a(
+    part_a: pd.DataFrame,
+    pai_hnu_runs: list[dict],
+) -> pd.DataFrame:
+    """Comparison: 6 Part A XGBoost anchor rows + 3 PAI-HNU rows (0.1/0.5/1.0 %)."""
+    if not pai_hnu_runs:
+        raise ValueError(
+            "No PAI-HNU runs found. Run "
+            "`python -m aml_benchmark.experiments.run_part_b_pai_hnu` first."
+        )
+
+    pai_ordered = _pai_hnu_runs_ordered_for_table6(pai_hnu_runs)
+    wanted_tps = (0.001, 0.005, 0.010)
+    have = {round(float(r["target_prevalence"]), 6) for r in pai_hnu_runs}
+    missing = [tp for tp in wanted_tps if round(tp, 6) not in have]
+    if missing:
+        raise ValueError(
+            "Table 6 requires full PAI-HNU grid at 0.1 %, 0.5 %, 1.0 %. "
+            f"Missing target_prevalence(s): {missing}. Found: {sorted(have)}."
+        )
+
+    raw_rows: list[dict] = _select_part_a_xgboost_rows_for_table6(part_a)
+
+    for run in pai_ordered:
+        m = run["metrics_test_opt"]
+        tp_count = float(m["tp"])
+        fp_count = float(m["fp"])
+        fppt = fp_count / tp_count if tp_count > 0 else float("inf")
+        raw_rows.append(
+            {
+                "group": "Part B PAI-HNU",
+                "label": (
+                    f"PAI-HNU @{run['target_prevalence']:.1%} (F1-opt)"
+                ),
+                "target_prevalence": run["target_prevalence"],
+                "pr_auc": float(m["pr_auc"]),
+                "threshold": run["optimal_threshold_val"],
+                "precision": float(m["precision"]),
+                "recall": float(m["recall"]),
+                "f1": float(m["f1"]),
+                "tp": int(tp_count),
+                "fp": int(fp_count),
+                "fp_per_tp": fppt,
+            }
+        )
+
+    if not raw_rows:
+        raise ValueError("Table 6 produced zero rows after filtering.")
+
+    pareto_flags = _flag_pareto(raw_rows)
+
+    out_rows: list[dict] = []
+    for r, is_pareto in zip(raw_rows, pareto_flags):
+        out_rows.append(
+            {
+                "Group": r["group"],
+                "Configuration": r["label"] + ("  *Pareto" if is_pareto else ""),
+                "PR-AUC": f"{r['pr_auc']:.4f}",
+                "Threshold": f"{r['threshold']:.4f}",
+                "Precision": f"{r['precision']:.4f}",
+                "Recall": f"{r['recall']:.4f}",
+                "F1": f"{r['f1']:.4f}",
+                "TP": f"{r['tp']:,}",
+                "FP": f"{r['fp']:,}",
+                "FP_per_TP": (
+                    "inf"
+                    if r["fp_per_tp"] == float("inf")
+                    else f"{r['fp_per_tp']:.2f}"
+                ),
+            }
+        )
+    return pd.DataFrame(out_rows)
+
+
 def main() -> None:
     root = _project_root()
     results_dir = root / "results"
@@ -467,6 +741,22 @@ def main() -> None:
         _write_table5(t5, header, tables_dir / "table5_part_b_multi_threshold")
     except FileNotFoundError as exc:
         print(f"[skip] table5_part_b_multi_threshold: {exc}")
+
+    # Table 6 — PAI-HNU vs. selected Part A configurations
+    pai_hnu_dir = root / "outputs" / "runs_part_b_pai_hnu"
+    try:
+        pai_hnu_runs = _load_pai_hnu_runs(pai_hnu_dir)
+        if not pai_hnu_runs:
+            print(
+                f"[skip] table6_pai_hnu_vs_part_a: no PAI-HNU runs found in "
+                f"{pai_hnu_dir}. Run "
+                "`python -m aml_benchmark.experiments.run_part_b_pai_hnu` first."
+            )
+        else:
+            t6 = _table6_pai_hnu_vs_part_a(part_a, pai_hnu_runs)
+            _write_csv_and_md(t6, tables_dir / "table6_pai_hnu_vs_part_a")
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[skip] table6_pai_hnu_vs_part_a: {exc}")
 
 
 if __name__ == "__main__":

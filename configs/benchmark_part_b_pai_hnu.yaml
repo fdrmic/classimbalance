@@ -1,0 +1,49 @@
+# benchmark_part_b_pai_hnu.yaml
+# -------------------------------------------------------
+# Strategy 6 — Part-A-Informed Hard-Negative Undersampling (PAI-HNU)
+#
+# Single strategy, single model (XGBoost), three target prevalences.
+# Hyperparameter set is intentionally identical to Part A
+# (models/factory.py defaults) so the comparison isolates the sampling
+# strategy as the sole independent variable.
+# -------------------------------------------------------
+
+target_prevalences:
+  - 0.001   # 0.1 %  — sensitivity (very close to full-train; included for protocol parity with Part A)
+  - 0.005   # 0.5 %
+  - 0.010   # 1.0 %
+
+sampling:
+  hard_negative_share:        0.50
+  temporal_random_share:      0.25
+  global_random_share:        0.25
+  n_temporal_blocks:          20
+  fill_shortfall_from_global: true
+
+  # Hard-negative selection cap (Variant B from the design plan):
+  #   n_hard_actual = min(round(hard_negative_share * n_neg_target),
+  #                       hard_negative_cap_multiplier * n_pos)
+  # Default 20× n_pos = ~1.276M hard negatives at LI-Large.
+  # When the cap binds, the leftover quota is reallocated 50/50 between
+  # temporal and global random pools (see sampling.hard_negative_undersampling).
+  hard_negative_cap_multiplier: 20
+
+baseline:
+  # Run id used to locate the Part-A XGBoost Baseline model that produces
+  # hard-negative scores. Baseline is invariant to target_prevalence (no
+  # resampling, no class weighting), so all three xgboost__baseline__pXXX
+  # runs would yield bit-identical models — we use one representative.
+  preferred_run_id: xgboost__baseline__p001__20260404_143052
+  score_cache_filename: baseline_train_scores.parquet
+  score_meta_filename:  baseline_train_scores_meta.json
+
+evaluation:
+  default_threshold: 0.5
+  optimal_threshold_criterion: f1   # consistent with Part A re_evaluate.py
+
+xgboost:
+  # PAI-HNU does NOT additionally apply scale_pos_weight: the imbalance is
+  # addressed via the construction of the training set itself. Combining
+  # both would double-count the imbalance correction.
+  use_factory_defaults: true
+  class_weight: null
