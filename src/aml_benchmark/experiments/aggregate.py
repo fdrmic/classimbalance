@@ -27,15 +27,15 @@ Output columns
     train_rows_after_sampling, train_positives_after_sampling, n_synthetic_samples
     val_rows, val_positives, test_rows, test_positives
     --- default threshold (0.5) ---
-    pr_auc_val, roc_auc_val, precision_val, recall_val, f1_val,
+    pr_auc_val, roc_auc_val, precision_val, recall_val, f1_val, f2_val,
     weighted_accuracy_val, tp_val, fp_val, tn_val, fn_val
-    pr_auc_test, roc_auc_test, precision_test, recall_test, f1_test,
+    pr_auc_test, roc_auc_test, precision_test, recall_test, f1_test, f2_test,
     weighted_accuracy_test, tp_test, fp_test, tn_test, fn_test
     --- optimal threshold ---
     optimal_threshold, threshold_criterion
-    precision_val_thresh, recall_val_thresh, f1_val_thresh,
+    precision_val_thresh, recall_val_thresh, f1_val_thresh, f2_val_thresh,
     tp_val_thresh, fp_val_thresh, tn_val_thresh, fn_val_thresh
-    precision_test_thresh, recall_test_thresh, f1_test_thresh,
+    precision_test_thresh, recall_test_thresh, f1_test_thresh, f2_test_thresh,
     weighted_accuracy_test_thresh,
     tp_test_thresh, fp_test_thresh, tn_test_thresh, fn_test_thresh
     --- run metadata ---
@@ -68,6 +68,7 @@ _METRIC_KEYS = (
     "precision",
     "recall",
     "f1",
+    "f2",
     "weighted_accuracy",
     "tp",
     "fp",
@@ -81,6 +82,7 @@ _THRESH_METRIC_KEYS = (
     "precision",
     "recall",
     "f1",
+    "f2",
     "weighted_accuracy",
     "tp",
     "fp",
@@ -249,6 +251,11 @@ def _print_leaderboard(df: pd.DataFrame, top_n: int = 10) -> None:
             "recall_test_thresh", "precision_test_thresh", "f1_test_thresh",
             "tp_test_thresh", "fp_test_thresh", "fn_test_thresh",
         ]
+        if "f2_test_thresh" in df.columns:
+            display_cols.insert(
+                display_cols.index("f1_test_thresh") + 1,
+                "f2_test_thresh",
+            )
     else:
         display_cols = [
             "model", "strategy", "target_prevalence",

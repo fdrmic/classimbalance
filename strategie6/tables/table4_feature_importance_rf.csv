@@ -1,0 +1,16 @@
+rank,feature,mean_importance
+1,payment_format,0.081165
+2,sender_avg_amount_30d,0.059014
+3,amount_received,0.049224
+4,amount_paid,0.048342
+5,receiver_entity_type,0.047359
+6,sender_tx_count_30d,0.046048
+7,receiver_avg_amount_30d,0.045639
+8,receiver_avg_amount_7d,0.042593
+9,receiver_tx_count_30d,0.041024
+10,sender_tx_count_7d,0.040432
+11,fan_in_score,0.039400
+12,receiver_unique_counterparties_30d,0.038759
+13,sender_avg_amount_7d,0.038298
+14,receiver_tx_count_1d,0.034927
+15,receiver_unique_counterparties_7d,0.034881
