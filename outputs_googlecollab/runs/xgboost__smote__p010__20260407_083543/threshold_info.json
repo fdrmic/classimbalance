@@ -1,0 +1,7 @@
+{
+  "criterion": "f1",
+  "optimal_threshold": 0.054518770426511765,
+  "val_f1_at_threshold": 0.06624920961918943,
+  "val_recall_at_threshold": 0.09493189922254049,
+  "val_precision_at_threshold": 0.05087719298245614
+}

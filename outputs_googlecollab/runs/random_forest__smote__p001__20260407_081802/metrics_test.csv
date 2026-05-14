@@ -1,0 +1,2 @@
+pr_auc,roc_auc,precision,recall,f1,weighted_accuracy,tp,fp,tn,fn,threshold
+0.023764326322816654,0.9032598812640018,0.0,0.0,0.0,0.500000000000002,0.0,0.0,26390298.0,19686.0,0.5

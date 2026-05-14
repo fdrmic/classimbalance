@@ -1,850 +1,425 @@
-# AML Benchmark — Project Structure and Technical Documentation
+# AML Benchmark — Bachelor Thesis (FHNW FS26)
 
-**Internal project documentation · Bachelor Thesis · FS26**
+**Technical documentation and replication guide** for the empirical benchmark in *class imbalance mitigation for AML transaction classification* on **IBM AMLworld Low-Illicit Large (LI-Large)**.
 
----
+The companion thesis defines the full methodology (Chapter 5). This document maps that design to **code, configs, and CLI entry points** so examiners can install, locate artefacts, and reproduce the pipeline structure.
 
-## Table of Contents
+**Where the reported runs actually live:** Full-scale Part A / Part B jobs for this thesis were run in **Google Colab**, orchestrated mainly from **`notebooks/`** (clone → `pip install -e .` → cells invoke the same `aml_benchmark` CLI/modules as below). `PathConfig` YAML files typically set **`outputs_dir`**, **`leaderboard_dir`**, and data paths to **absolute locations on the mounted Google Drive**. The directories **`outputs/`** and **`results/`** at the **repository root** may therefore be **empty, incomplete, or only hold copies** you added for submission or local smoke tests — that does **not** contradict the code layout described here.
 
-1. [Project & Research Question](#1-project--research-question)
-2. [Implementation Status](#2-implementation-status)
-3. [Repository Structure and Module Mapping](#3-repository-structure-and-module-mapping)
-4. [End-to-End Pipeline Walk-Through](#4-end-to-end-pipeline-walk-through)
-5. [Dataset (LI-Large)](#5-dataset-li-large)
-6. [Labeling Logic](#6-labeling-logic)
-7. [Temporal Split](#7-temporal-split)
-8. [Feature Engineering](#8-feature-engineering)
-9. [Imbalance Mitigation Strategies](#9-imbalance-mitigation-strategies)
-10. [Models and Hyperparameters](#10-models-and-hyperparameters)
-11. [Evaluation Metrics and Threshold Policy](#11-evaluation-metrics-and-threshold-policy)
-12. [Result Aggregation and Leaderboard](#12-result-aggregation-and-leaderboard)
-13. [Part B — Custom Strategy and Multi-Threshold Analysis](#13-part-b--custom-strategy-and-multi-threshold-analysis)
-14. [Reproducibility](#14-reproducibility)
-15. [Hardware Context and Performance](#15-hardware-context-and-performance)
-16. [Known Limitations](#16-known-limitations)
-17. [Open Questions / TBD](#17-open-questions--tbd)
-18. [Appendix — CLI Cheat-Sheet](#18-appendix--cli-cheat-sheet)
+**Example paths (Google Colab + Drive — replace with your layout):**
+
+| Role | Example path |
+|------|----------------|
+| Drive root after `drive.mount` | `/content/drive/MyDrive/` |
+| Aggregated experiment / backup parent | `/content/drive/MyDrive/aml_results/` |
+| One Part A backup folder (timestamp in name varies) | `/content/drive/MyDrive/aml_results/large_run_v2_20260407_1904/` |
+| Per-run artefacts | `.../large_run_v2_<batch>/runs/<model>__<strategy>__pXXX__<timestamp>/` (`model.pkl`, `run_config.json`, `metrics_*.json`, …) |
+| Leaderboard CSV inside that backup | `.../large_run_v2_<batch>/leaderboard/part_a_summary_v2.csv` |
+| Feature-importance sweep over all `runs/` trees (notebook) | e.g. pass several `--runs-roots` under `aml_results/large_run_v2_*/runs` or `--aml-results /content/drive/MyDrive/aml_results` (see `extract_f2_from_runs.py` / `notebooks/feature_importance.ipynb`) |
+| Large raw / processed data (typical) | Often a separate folder such as `/content/drive/MyDrive/aml_data/` — must match the paths in `configs/paths_large_v2.yaml` |
+
+In Colab, **`/content/classimbalance`** (or similar) is the **cloned repo**; **artefacts** usually live under **`/content/drive/...`**, not under the repo root.
 
 ---
 
-## 1. Project & Research Question
+## Table of contents
 
-### Research question
-
-> *How do different class-imbalance mitigation strategies affect detection performance in AML transaction monitoring under extreme class imbalance?*
-
-**Sub-Question 4 (Part B, revised).** *Does a sampling strategy that is **explicitly informed by the failure modes observed in Part A** — namely (a) the predictability ceiling of the XGBoost Baseline at the natural prevalence of ~0.05 %, (b) the operational efficiency of Random Undersampling, and (c) the false-positive inflation produced by SMOTE/ADASYN — recover or surpass the operational characteristics of the best Part A configurations on the held-out test split, without modifying the model family, hyperparameters, splits, or features?*
-
-The phrase **"informed by"** is operationalised in `docs/part_b_pai_hnu_design.md`: each design decision in PAI-HNU traces back to one specific Part A finding (Mapping Table §3 of that document).
-
-### Project framing
-
-The project implements a reproducible academic benchmark for **binary transaction-level AML classification** on the **IBM AMLworld synthetic dataset** (Altman et al., 2023, NeurIPS — [arXiv:2306.16424](https://arxiv.org/abs/2306.16424)). The active production variant is **Low-Illicit Large (LI-Large)** with a natural training-set prevalence of **0.052 %** (≈ 1 illicit per 1,930 transactions).
-
-This is **not** a production fraud-detection system. It is a controlled experiment that isolates the effect of imbalance handling under fixed splits, fixed features, and fixed hyperparameters.
-
-### Two-part design
-
-| Part | Scope | Grid | Status |
-|---|---|---|---|
-| **Part A** | Five canonical mitigation strategies × two model families × three target prevalences | 30 runs | **Complete (approved)** |
-| **Part B (primary)** | Strategy 6 — **Part-A-Informed Hard-Negative Undersampling (PAI-HNU)**: XGBoost trained on a constructed training set that retains all positives plus a 50 / 25 / 25 split of (a) baseline-hard negatives, (b) temporal-stratified random negatives, (c) global random negatives. | 3 runs (one per target prevalence) | **In progress** |
-| **Part B (auxiliary / exploratory)** | (i) `true_cost_weighting` — class-weighting using the empirical n_neg / n_pos ratio. (ii) Multi-strategy threshold optimisation on the Part A XGBoost Baseline (`precision_constrained`, `f1_max`, `f2_max`). Reported as supporting evidence — not the main contribution. | 6 + 3 evaluations | Complete |
-
-**Five canonical strategies (Part A):**
-
-| Strategy | Mechanism |
-|---|---|
-| `baseline` | No imbalance handling (reference condition) |
-| `random_undersampling` | Reduce majority class |
-| `smote` | Synthetic minority oversampling (linear interpolation between k-NN) |
-| `adasyn` | Adaptive synthetic oversampling (denser near decision boundary) |
-| `class_weighting` | Cost-sensitive learning via `class_weight = {0: 1, 1: (1−p)/p}` |
-
-**Three target training prevalences:** 1.0 %, 0.5 %, 0.1 %.
-
-**Two model families:** Random Forest (`sklearn`), XGBoost (`xgboost`).
+1. [Quick start (replication overview)](#1-quick-start-replication-overview)
+2. [Research design (summary)](#2-research-design-summary)
+3. [Installation and dependencies](#3-installation-and-dependencies)
+4. [Data acquisition](#4-data-acquisition)
+5. [Repository layout](#5-repository-layout)
+6. [End-to-end pipeline](#6-end-to-end-pipeline)
+7. [Dataset (LI-Large)](#7-dataset-li-large)
+8. [Labelling](#8-labelling)
+9. [Temporal split](#9-temporal-split)
+10. [Feature engineering (30 features)](#10-feature-engineering-30-features)
+11. [Imbalance mitigation strategies (Part A)](#11-imbalance-mitigation-strategies-part-a)
+12. [Models and hyperparameters](#12-models-and-hyperparameters)
+13. [Evaluation metrics and threshold policy](#13-evaluation-metrics-and-threshold-policy)
+14. [Results aggregation and thesis tables](#14-results-aggregation-and-thesis-tables)
+15. [Part B — PAI-HNU (primary contribution)](#15-part-b--pai-hnu-primary-contribution)
+16. [Legacy / exploratory Part B code (optional)](#16-legacy--exploratory-part-b-code-optional)
+17. [Feature importance](#17-feature-importance)
+18. [Reproducibility](#18-reproducibility)
+19. [Hardware and runtime](#19-hardware-and-runtime)
+20. [Known limitations](#20-known-limitations)
+21. [Appendix — CLI cheat sheet](#21-appendix--cli-cheat-sheet)
 
 ---
 
-## 2. Implementation Status
+## 1. Quick start (replication overview)
 
-### Implemented (production-ready)
+**Prerequisites:** Python ≥ 3.10, the LI-Large raw files under `data/raw/` (see §4), and sufficient RAM/GPU for full runs (§19). Paths in `configs/*.yaml` may use absolute locations (e.g. Google Drive mount on Colab).
 
-| Component | Module |
-|---|---|
-| Raw data ingestion (chunked, leading-zero safe) | `data/ingest.py` |
-| Schema normalisation and dtypes | `data/schema.py` |
-| Pattern parsing (LI-Small only — disabled for Large) | `data/pattern_parser.py` |
-| Transaction labelling (CSV ground truth) | `data/labeler.py` |
-| Labeled-dataset export | `data/make_dataset.py` |
-| Chronological train/val/test split + manifest | `data/splitter.py` |
-| Leakage-safe feature pipeline (30 features incl. account aggregates) | `features/pipeline.py`, `features/aggregator.py`, `features/feature_cache.py` |
-| Imbalance-mitigation strategy module | `sampling/strategies.py`, `sampling/prevalence.py` |
-| Model factory (RF + XGBoost) with class-weight integration | `models/factory.py` |
-| Evaluation metrics (PR-AUC primary, F1, F2, weighted accuracy, etc.) | `evaluation/metrics.py` |
-| Single-experiment runner (with feature cache + full artefact persistence) | `experiments/runner.py` |
-| Grid runner (resume + auto-backup to Drive) | `experiments/grid_runner.py` |
-| Post-hoc F1-optimal threshold re-evaluation | `experiments/re_evaluate.py` |
-| Result aggregator → leaderboard CSV | `experiments/aggregate.py` |
-| Part B multi-strategy threshold optimisation (3 strategies, no retraining) — *auxiliary* | `experiments/threshold_optimizer.py` |
-| **Part B PAI-HNU sampler (Strategy 6 — primary)** | `sampling/hard_negative_undersampling.py` |
-| **Part B PAI-HNU score cache + runner** | `experiments/score_baseline_train.py`, `experiments/run_part_b_pai_hnu.py` |
-| Thesis-table generator (CSV + MD output, incl. Table 6 PAI-HNU vs. Part A) | `analysis/results_tables.py` |
-| Audit notebook (data integrity check) | `notebooks/01_data_check.ipynb` |
-| Production run notebooks | `aml_large_run.ipynb`, `aml_part_b_multi_threshold_run.ipynb` |
+**Primary replication path for examiners:** Follow **`notebooks/`** in order (Part A large run → PAI-HNU → optional feature importance), after mounting Drive and adjusting path variables/YAML to match your Drive tree. Local CLI-only replication is equivalent if you point the same YAML keys to writable directories on your machine.
 
-### Not yet implemented (deliberately deferred)
+**Minimal install:**
 
-| Item | Reason |
-|---|---|
-| Hyperparameter tuning | Out of scope — the thesis question concerns strategies, not hyperparameters; defaults documented in §10 |
-| Cross-validation (temporal folds) | Single fixed split; CV would change the variance baseline and complicate the strategy comparison |
-| Graph-topology features (degree centrality, betweenness) | Listed in §8.4 as a planned extension; not required for the current research question |
-| Pattern metadata stratification on LI-Large | Pattern matching disabled in Large for performance; would require a separate Large-scale pattern parser |
+```bash
+pip install -e .
+# Optional: pinned stack for examination (maintain requirements.txt alongside pyproject.toml)
+pip install -r requirements.txt
+```
+
+**Typical order of execution (Part A v2 on LI-Large):**
+
+1. `python -m aml_benchmark.data.make_dataset --paths configs/paths_large_v2.yaml`
+2. `python -m aml_benchmark.data.splitter --paths configs/paths_large_v2.yaml`
+3. `python -m aml_benchmark.experiments.grid_runner --paths configs/paths_large_v2.yaml` (30 runs; resume-capable)
+4. `python -m aml_benchmark.experiments.re_evaluate --paths configs/paths_large_v2.yaml` (F1-optimal threshold on validation → test)
+5. `python -m aml_benchmark.experiments.aggregate --paths configs/paths_large_v2.yaml`
+
+**Part B (PAI-HNU)** — after Part A baseline artefacts and feature cache exist:
+
+1. `pytest tests/test_pai_hnu_sampler.py -v`
+2. `python -m aml_benchmark.experiments.score_baseline_train --paths configs/paths_large_part_b_pai_hnu.yaml`
+3. `python -m aml_benchmark.experiments.run_part_b_pai_hnu --paths configs/paths_large_part_b_pai_hnu.yaml`
+
+**Colab notebooks** (orchestrations with Drive paths) live under `notebooks/` and/or the repository root; adjust paths to your environment. See §5.
+
+**Thesis tables (CSV + Markdown):**
+
+```bash
+python -m aml_benchmark.analysis.results_tables
+```
 
 ---
 
-## 3. Repository Structure and Module Mapping
+## 2. Research design (summary)
 
-### Folder layout
-
-```
-classimbalance/
-├── configs/                           # YAML configuration files (multiple environments)
-│   ├── paths.yaml                     # Default (LI-Small smoke-test)
-│   ├── paths_large_v2.yaml            # Production: LI-Large Part A (active)
-│   ├── paths_large_part_b_v2.yaml     # Production: LI-Large Part B Strategy 6
-│   ├── paths_large_part_b_v3.yaml     # Production: LI-Large Part B v3 (newer outputs)
-│   ├── paths_part_b.yaml              # Legacy Part B paths (LI-Large, old layout)
-│   ├── split.yaml                     # Train/val/test ratios (70/15/15)
-│   ├── experiment.yaml                # Global random_seed = 42
-│   ├── benchmark.yaml                 # Part A grid: 5×2×3 = 30 runs
-│   ├── benchmark_part_b.yaml          # Part B (auxiliary): true_cost_weighting grid
-│   ├── benchmark_part_b_multi.yaml    # Part B (auxiliary): Multi-Threshold (precision/F1/F2)
-│   ├── benchmark_part_b_pai_hnu.yaml  # Part B (primary): PAI-HNU shares, prevalences, baseline ref
-│   └── paths_large_part_b_pai_hnu.yaml # Path config for PAI-HNU outputs
-│
-├── data/
-│   ├── raw/                           # Original IBM AML files (immutable)
-│   │   ├── LI-Large_Trans.csv         # ~ 176 M transactions
-│   │   ├── LI-Large_accounts.csv      # Account → entity_type mapping
-│   │   └── LI-Large_Patterns.txt      # (parsed only for Small; skipped for Large)
-│   ├── processed_v2/
-│   │   └── transactions_labeled.parquet
-│   └── splits_v2/
-│       ├── train.parquet              # 70 % (~ 123 M rows)
-│       ├── val.parquet                # 15 % (~ 26 M rows)
-│       ├── test.parquet               # 15 % (~ 26 M rows)
-│       ├── split_manifest.json        # row counts, date ranges, class ratios
-│       ├── train_features_v2.parquet  # cached feature matrix (X_train)
-│       ├── val_features_v2.parquet
-│       ├── test_features_v2.parquet
-│       └── feature_pipeline_v2.pkl    # serialised fitted FeaturePipeline
-│
-├── outputs/                           # Run artefacts (lives on Drive in Colab)
-│   ├── runs_v2/                       # Part A: one folder per run
-│   │   └── <model>__<strategy>__pXXX__<timestamp>/
-│   │       ├── run_config.json
-│   │       ├── feature_pipeline.pkl
-│   │       ├── model.pkl
-│   │       ├── metrics_val.json/.csv          # @ threshold = 0.5
-│   │       ├── metrics_test.json/.csv         # @ threshold = 0.5
-│   │       ├── metrics_val_thresh.json/.csv   # @ F1-optimal threshold
-│   │       ├── metrics_test_thresh.json/.csv  # @ F1-optimal threshold
-│   │       └── threshold_info.json            # F1-optimal threshold metadata
-│   ├── runs_part_b_v3/                # Part B (auxiliary): true_cost_weighting runs
-│   ├── runs_part_b_pai_hnu/           # Part B (PRIMARY): PAI-HNU full runs
-│   │   └── <run_id>/                  #   xgboost__pai_hnu__pXXX__<timestamp>/
-│   │       ├── run_config.json
-│   │       ├── sampling_manifest.json
-│   │       ├── model.pkl
-│   │       ├── metrics_{val,test}.{json,csv}        # @ default threshold 0.5
-│   │       └── metrics_{val,test}_opt.{json,csv}    # @ F1-optimal (val) threshold
-│   ├── runs_part_b_pai_hnu_smoke/     # Part B PAI-HNU mini-end-to-end smoke runs (--sample-n-train)
-│   ├── leaderboard_v2/
-│   │   └── part_a_summary_v2.csv      # 30-row leaderboard
-│   ├── leaderboard_part_b_pai_hnu/    # Part B PAI-HNU leaderboard (separate)
-│   └── part_b_thresholds/             # Part B (auxiliary) Multi-Threshold outputs
-│       └── <run_id>/<strategy>/{metrics_*.json,csv, threshold_info.json}
-│
-├── docs/
-│   └── part_b_pai_hnu_design.md       # SQ-4, mapping table, methodology, anti-leakage, success criteria
-│
-├── results/                           # Inputs for thesis table generator
-│   ├── part_a_summary_v2.csv
-│   ├── part_b_multi_threshold_summary.json
-│   ├── feature_importance_xgboost_mean.csv
-│   ├── feature_importance_rf_mean.csv
-│   └── tables/                        # Auto-generated: table1a, table1b, table5, table6, ...
-│
-├── tests/
-│   └── test_pai_hnu_sampler.py        # 6 unit tests for the PAI-HNU sampler
-│
-├── notebooks/
-│   └── 01_data_check.ipynb
-│
-├── aml_large_run.ipynb                # Part A end-to-end runbook (Colab)
-├── aml_part_b_multi_threshold_run.ipynb  # Part B Multi-Threshold runbook
-│
-├── src/aml_benchmark/                 # Main Python package (see mapping below)
-├── pyproject.toml                     # Package definition
-└── README_PROJECT_STRUCTURE.md        # ← this file
-```
-
-### Doc-section ↔ module mapping
-
-| Section | Module(s) |
-|---|---|
-| §5 Dataset | `data/ingest.py`, `data/schema.py`, `configs/paths_large_v2.yaml` |
-| §6 Labeling | `data/labeler.py`, `data/make_dataset.py`, `utils/hashing.py` |
-| §7 Split | `data/splitter.py`, `configs/split.yaml` |
-| §8 Features | `features/pipeline.py`, `features/aggregator.py`, `features/feature_cache.py` |
-| §9 Strategies | `sampling/strategies.py`, `sampling/prevalence.py` |
-| §10 Models | `models/factory.py` |
-| §11 Evaluation | `evaluation/metrics.py`, `experiments/re_evaluate.py` |
-| §12 Aggregation | `experiments/aggregate.py` |
-| §13 Part B (auxiliary) | `experiments/threshold_optimizer.py`, `configs/benchmark_part_b*.yaml` |
-| §13 Part B (PAI-HNU, primary) | `sampling/hard_negative_undersampling.py`, `experiments/score_baseline_train.py`, `experiments/run_part_b_pai_hnu.py`, `configs/{benchmark_part_b_pai_hnu,paths_large_part_b_pai_hnu}.yaml`, `docs/part_b_pai_hnu_design.md` |
-| §13 Tables | `analysis/results_tables.py` |
-
-### Configuration architecture
-
-`PathConfig` (`config.py`) accepts an optional explicit YAML path so the same code can be invoked against different environments without touching code:
-
-```python
-from aml_benchmark.config import PathConfig
-paths = PathConfig("configs/paths_large_v2.yaml")  # Part A
-paths = PathConfig("configs/paths_large_part_b_v3.yaml")  # Part B
-```
-
-Relative paths in the YAML resolve against the repository root; absolute paths (e.g. Drive mount points) are used as-is. This is what enables seamless Colab ↔ local execution.
+- **Part A:** Controlled factorial benchmark — **five** training-time strategies (`baseline`, `random_undersampling`, `smote`, `adasyn`, `class_weighting`) × **two** model families (Random Forest, XGBoost) × **three** target training prevalences (0.1 %, 0.5 %, 1.0 %) → **30 executed runs**. The **main comparative analysis** uses **20 conditions** (baseline is prevalence-invariant → one reference per model; ADASYN is reported separately in the thesis appendix due to structural constraints of the subsampled density step).
+- **Part B (thesis “sixth strategy”):** **Part-A-informed Hard-Negative Undersampling (PAI-HNU)** — XGBoost only; same splits, metrics, and hyperparameters as Part A; constructs training data from **all positives** plus **50 % / 25 % / 25 %** hard-negative, temporal-stratified, and global-random negatives (details in `docs/part_b_pai_hnu_design.md` and §15).
+- **Isolation principle:** Feature engineering, hyperparameters, temporal split, metric definitions, and **random seed 42** are fixed across conditions unless noted; only strategy, model class, and target prevalence vary (Part A), or sampling construction varies (Part B).
 
 ---
 
-## 4. End-to-End Pipeline Walk-Through
+## 3. Installation and dependencies
 
-The complete benchmark consists of **four stages**, each callable independently:
+- **Package definition:** `pyproject.toml` (installable package `aml_benchmark` under `src/`).
+- **Version pins:** If you submit `requirements.txt`, treat it as the **examiner-facing frozen stack** for the environment used to produce the reported numbers; `pyproject.toml` may retain **lower bounds** only.
 
-```
-[Raw CSV/TXT] -> Stage 1: Labeling     -> transactions_labeled.parquet
-              -> Stage 2: Splitting    -> {train,val,test}.parquet + manifest
-              -> Stage 3: Experiment   -> outputs/runs_v2/<run_id>/...
-                  (includes Stage 3a: feature build + cache,
-                              3b: imbalance strategy,
-                              3c: train,
-                              3d: evaluate @ threshold 0.5)
-              -> Stage 4a: Re-evaluate -> metrics_*_thresh + threshold_info
-              -> Stage 4b: Aggregate   -> part_a_summary_v2.csv (leaderboard)
-```
+Declared core libraries (see `pyproject.toml` for current minimums) include **pandas**, **pyarrow**, **numpy**, **PyYAML**, **scikit-learn**, **imbalanced-learn**, **xgboost**, **joblib**, and optional plotting/notebook dependencies.
 
-### Stage 1 — Labelling
-
-```
-python -m aml_benchmark.data.make_dataset --paths configs/paths_large_v2.yaml
-```
-
-`ingest.py` chunked-reads the transactions CSV (`dtype=str` to preserve leading IDs), parses timestamps, drops unparseable rows, and casts numeric columns. `labeler.py` assigns the canonical binary `label` column directly from `is_laundering_csv` (the IBM-generator ground truth — see §6) and sorts the dataset chronologically. Output: `data/processed_v2/transactions_labeled.parquet`.
-
-### Stage 2 — Splitting
-
-```
-python -m aml_benchmark.data.splitter --paths configs/paths_large_v2.yaml
-```
-
-`splitter.py` sorts by `timestamp`, splits at row-index quantiles (70/15/15), persists three parquet files plus `split_manifest.json` recording row counts, positives, achieved prevalence, and date ranges per split.
-
-### Stage 3 — Single experiment
-
-```
-python -m aml_benchmark.experiments.runner --paths configs/paths_large_v2.yaml
-```
-
-`runner.py:run_experiment(model_name, strategy, target_prevalence, ...)` performs **one** complete condition. The grid runner (`grid_runner.py`) iterates this over the full 30-condition grid defined in `benchmark.yaml`. On the first invocation it builds and caches the feature matrices; all subsequent runs load from the cache, which removes the dominant computational cost (account-level rolling aggregates).
-
-Per-run outputs (in `outputs/runs_v2/<run_id>/`):
-
-| File | Content |
-|---|---|
-| `run_config.json` | All inputs + achieved prevalences + class weights + timings |
-| `feature_pipeline.pkl` | The fitted `FeaturePipeline` (for downstream re-use) |
-| `model.pkl` | The fitted estimator (joblib) |
-| `metrics_{val,test}.json/.csv` | Metrics at threshold = 0.5 |
-
-### Stage 4a — F1-optimal threshold re-evaluation
-
-```
-python -m aml_benchmark.experiments.re_evaluate --paths configs/paths_large_v2.yaml
-```
-
-`re_evaluate.py` walks every run folder, loads the model + cached features, recomputes scores, finds the F1-optimal threshold **on the validation set only**, and applies it once to the test set. Outputs: `metrics_{val,test}_thresh.json/.csv` and `threshold_info.json`. See §11.2.
-
-### Stage 4b — Aggregation
-
-```
-python -m aml_benchmark.experiments.aggregate --paths configs/paths_large_v2.yaml
-```
-
-`aggregate.py` collects every run's `run_config.json`, `metrics_*.json`, `metrics_*_thresh.json`, and `threshold_info.json` into a single tabular leaderboard at `outputs/leaderboard_v2/part_a_summary_v2.csv` (one row per run). Sorted by `pr_auc_test` desc, then `recall_test_thresh` desc.
-
----
-
-## 5. Dataset (LI-Large)
-
-**Source.** IBM AMLworld Synthetic Dataset — Variant **Low-Illicit Large**.
-*Altman et al., 2023, NeurIPS — [arXiv:2306.16424](https://arxiv.org/abs/2306.16424).*
-
-**Raw files** (resolved by `configs/paths_large_v2.yaml`):
-
-| File | Path | Notes |
-|---|---|---|
-| Transactions | `data/raw/LI-Large_Trans.csv` | The 11-column transaction log |
-| Accounts | `data/raw/LI-Large_accounts.csv` | Account → entity_type mapping |
-| Patterns | `data/raw/LI-Large_Patterns.txt` | **Not parsed** in the Large pipeline (see below) |
-
-**Raw-column schema** (from `data/schema.py:RAW_TRANS_COLUMNS`): `timestamp`, `from_bank`, `from_account`, `to_bank`, `to_account`, `amount_received`, `receiving_currency`, `amount_paid`, `payment_currency`, `payment_format`, `is_laundering_csv`. The original CSV header has a duplicated `Account` column for sender and receiver; `ingest.py` overrides the header with these unambiguous names.
-
-**Total transactions** (post drop of unparseable timestamps): rows are partitioned 70/15/15 into the splits below; the manifest recorded by `splitter.py` is the authoritative source. **TBD: read exact total + global natural prevalence from `data/splits_v2/split_manifest.json` (lives on Drive).**
-
-**Pattern matching disabled in Large.** `labeler.py` keeps the API for `patterns` but skips the join (`label_from_patterns` = 0, `pattern_type` = `"NONE"` for all rows) — performance reasons on > 100 M rows. The label column `label` is taken **verbatim** from the IBM-generator field `is_laundering_csv`, which is the authoritative ground truth covering both seed and layering-step transactions. See §6.
-
----
-
-## 6. Labeling Logic
-
-| Output column | Meaning | Source |
-|---|---|---|
-| `label_existing_csv` | Original `Is Laundering` from the transactions CSV (IBM ground truth) | CSV column 10 |
-| `label` | **Canonical binary target** for all training and evaluation | = `label_existing_csv` |
-| `label_from_patterns` | 1 if the transaction matched the patterns file (Small only) | Pattern join — Large: always 0 |
-| `mismatch_flag` | CSV-illicit but absent from patterns | Large: always 0 |
-| `pattern_type` | Laundering scheme (e.g. `FAN-IN`); `"NONE"` if unmatched | Pattern join — Large: `"NONE"` |
-| `pattern_block_id` | 1-based pattern block; `-1` if unmatched | Pattern join — Large: `-1` |
-
-**Why use `label_existing_csv` rather than `label_from_patterns` as the target?** The patterns file is an incomplete subset (seed transactions only). The CSV column was assigned by the IBM generator and covers **all** illicit transactions including layering steps. Using only the patterns label would silently misclassify thousands of genuine positives as legitimate.
-
----
-
-## 7. Temporal Split
-
-**Method.** Strictly **temporal** and **deterministic** — no random seed for the split itself.
-
-```python
-df_sorted = df.sort_values("timestamp").reset_index(drop=True)
-train_end = int(n * train_ratio)
-val_end   = int(n * (train_ratio + val_ratio))
-train, val, test = df_sorted.iloc[:train_end], df_sorted.iloc[train_end:val_end], df_sorted.iloc[val_end:]
-```
-
-**Ratios** (`configs/split.yaml`): 70 % train, 15 % val, 15 % test.
-
-**Recorded sizes for LI-Large** (Part A baseline; from `outputs/leaderboard_v2/part_a_summary_v2.csv`):
-
-| Split | Rows | Positives | Achieved prevalence | Date range |
-|---|---:|---:|---:|---|
-| Train (baseline, pre-sampling) | 123,246,589 | 63,811 | 0.051775 % | TBD (manifest) |
-| Validation | 26,409,984 | 17,107 | 0.064775 % | TBD (manifest) |
-| Test | 26,409,984 | 19,686 | 0.074549 % | TBD (manifest) |
-
-Date ranges are written by `_split_stats(...)` in `splitter.py` to `split_manifest.json` but the file currently lives on Drive only (see §17).
-
-The mild upward drift in test prevalence (0.052 % → 0.075 %) reflects natural concentration of generator-burst patterns in the later time window. This is preserved as part of the realistic evaluation condition.
-
-**Look-ahead-bias defences.**
-1. **Split** is purely chronological — no random permutation.
-2. **Encoders** in `FeaturePipeline.fit_transform` are fit on training rows only; `transform` re-applies them to val/test without refitting.
-3. **Account-level rolling aggregates** in `aggregator._rolling_agg` use only past-of-event observations within each rolling window (1 d / 7 d / 30 d) — no future leakage into past features.
-
----
-
-## 8. Feature Engineering
-
-The final feature matrix has **30 columns** (assembled in this order in `features/pipeline.py:_assemble`):
-
-### 8.1 Numeric (2)
-
-| Feature | Source | Transform |
-|---|---|---|
-| `amount_paid` | `amount_paid` (raw) | `np.log1p` |
-| `amount_received` | `amount_received` (raw) | `np.log1p` |
-
-### 8.2 Categorical (2)
-
-`OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=NaN)` — fit on training data only:
-
-| Feature | Source |
-|---|---|
-| `payment_format` | `payment_format` |
-| `payment_currency` | `payment_currency` |
-
-### 8.3 Derived (8)
-
-| Feature | Formula |
-|---|---|
-| `hour` | `timestamp.dt.hour` (0–23) |
-| `day_of_week` | `timestamp.dt.dayofweek` (0 = Monday) |
-| `same_bank_flag` | `from_bank == to_bank` |
-| `self_transfer_flag` | `from_account == to_account` |
-| `currency_mismatch` | `payment_currency != receiving_currency` |
-| `amount_ratio` | `clip(raw_received / raw_paid, 0, 10)` |
-| `fan_in_score` | `clip(receiver_tx_count_7d / (sender_tx_count_7d + ε), 0, 100)` |
-| `fan_out_score` | `clip(sender_unique_counterparties_7d / (receiver_unique_counterparties_7d + ε), 0, 100)` |
-
-### 8.4 Account-level (18)
-
-Computed by `features/aggregator.py:compute_account_features` using integer-encoded account IDs and per-group numpy operations (~20–50× faster than naive Python set loops). Rolling windows: 1 d / 7 d / 30 d.
-
-| Sender features | Receiver features |
-|---|---|
-| `sender_tx_count_1d/7d/30d` | `receiver_tx_count_1d/7d/30d` |
-| `sender_avg_amount_7d/30d` | `receiver_avg_amount_7d/30d` |
-| `sender_unique_counterparties_7d/30d` | `receiver_unique_counterparties_7d/30d` |
-| `sender_cross_bank_ratio_30d` | `receiver_cross_bank_ratio_30d` |
-| `sender_entity_type` | `receiver_entity_type` |
-
-`entity_type` is loaded from `LI-Large_accounts.csv` (mapping: 0 = Corporation, 1 = Partnership, 2 = Unknown).
-
-### 8.5 Cache mechanism
-
-`features/feature_cache.py` persists the assembled matrices after the first computation:
-
-- `data/splits_v2/{train,val,test}_features_v2.parquet`
-- `data/splits_v2/feature_pipeline_v2.pkl`
-
-Subsequent runs (the remaining 29 of the 30-condition grid, plus all Part B work) load from cache, avoiding the expensive aggregation step entirely.
-
-### 8.6 Planned but not implemented
-
-- Graph-topology features (in/out degree, betweenness centrality proxy)
-- Round-amount indicator (suspicious-round flag)
-- Multi-currency exposure metric per account
-
----
-
-## 9. Imbalance Mitigation Strategies
-
-All strategies are implemented in `sampling/strategies.py` and applied **only to the training split**. Validation and test data remain untouched at every step. Each strategy returns a `SamplingResult` carrying the resampled `(X, y)`, the optional `class_weight` dict, achieved prevalence, and synthetic-sample count.
-
-The conversion *target prevalence p → imblearn `sampling_strategy` ratio* is `r = p / (1 − p)` (`prevalence_to_ratio` in `sampling/prevalence.py`).
-
-### 9.1 `baseline`
-
-Returns training data unchanged. `target_prevalence` is recorded but not enforced. Reference condition.
-
-### 9.2 `random_undersampling`
-
-`imblearn.under_sampling.RandomUnderSampler(sampling_strategy=r, random_state=42)`. Applied only when `target_prevalence > natural_prevalence`; otherwise falls back to `baseline`.
-
-### 9.3 `smote`
-
-`imblearn.over_sampling.SMOTE(sampling_strategy=r, k_neighbors=k, random_state=42)` with `k = min(5, n_pos − 1)`. Synthetic positives are generated by linear interpolation between minority k-NN. The majority class is unchanged.
-
-### 9.4 `adasyn` — with mandatory subsampling for KNN density estimation
-
-`imblearn.over_sampling.ADASYN(sampling_strategy=ratio, n_neighbors=min(5, n_pos − 1), random_state=42)`.
-
-When the majority class exceeds **`MAX_MAJORITY_FOR_KNN = 500,000`** rows (always the case on LI-Large), the implementation in `strategies.py:_adasyn` does the following:
-
-1. Select a reproducible random subsample of **500,000 majority rows** with `np.random.default_rng(random_state)` and concatenate with **all** minority rows.
-2. Run `ADASYN.fit_resample` on this subsample.
-3. Compute the number of synthetic samples required so that the *full* training set reaches `target_prevalence`, not just the subsample (`n_pos_needed = round(target_prevalence × n_majority / (1 − target_prevalence))`).
-4. Extract only the new synthetic minority samples from the result and append them to the **complete original training data**.
-
-Subsample reproducibility:
-- The subsample seed is `random_seed = 42` from `configs/experiment.yaml`, so identical Drive runs produce identical subsamples.
-- `n_neighbors` resolves to **5** in practice on LI-Large (`min(5, 63810)`).
-- A `RuntimeError` from ADASYN (e.g. degenerate density estimate) triggers an automatic fallback to `smote` for that condition.
-
-### 9.5 `class_weighting`
-
-No resampling. Returns the unchanged training data plus a class-weight dict derived from the target prevalence:
-
-```
-w0 = 1.0
-w1 = (1 − target_prevalence) / target_prevalence
-class_weight = {0: w0, 1: w1}
-```
-
-Per model family (`models/factory.py`):
-- **Random Forest** — passed directly as the `class_weight=` constructor argument.
-- **XGBoost** — converted to `scale_pos_weight = w1 / w0`, which multiplies the gradient contribution of every positive sample.
-
-### 9.6 Additional strategies implemented (used in Part B)
-
-| Strategy | Purpose |
-|---|---|
-| `smote_class_weighting` | SMOTE oversampling + cost-sensitive class weights derived from the *original* class ratio (not from `target_prevalence`). Combined effect of resampling and weighting. |
-| `true_cost_weighting` | No resampling; class weights derived from the *actual* training imbalance (`w1 = n_neg / n_pos`, ≈ 1,930 on LI-Large). Defines the Part B "Strategy 6" baseline. |
-
-### 9.7 Class weighting × `max_samples` interaction (Random Forest)
-
-Defense-relevant for §10.2. Given how `sklearn._forest._parallel_build_trees` handles `class_weight=dict` (verified against sklearn ≥ 1.3 source plus issue #24037):
-
-1. `compute_sample_weight(class_weight, y)` is called **once on the full y** before any tree training, producing per-sample weights (length = `n_train_samples`).
-2. Per tree: indices are bootstrapped to size `n_samples_bootstrap = max_samples`; `sample_counts = bincount(indices)`; the final `sample_weight = expanded_class_weight × sample_counts` is passed to the tree fit.
-
-→ **Per-sample class weights survive bootstrap.** They are *not* mathematically diluted by `max_samples`. Each drawn positive retains its `w1` factor in the impurity computation.
-
-→ **However**, the *effective* signal is structurally weak under extreme imbalance combined with small bootstrap caps: the expected number of positives per tree is `200,000 × 63,811 / 123,246,589 ≈ 103`, with many duplicates. Each tree therefore sees only ~100 unique positive observations, which limits ensemble diversity and explains why varying `target_prevalence` does not move RF-Class-Weighting results much in our Part A tables.
-
-This is a *result*, not a bug. It motivates Part B's discussion of why cost-sensitive trees under extreme imbalance benefit from a stratified-bootstrap variant (`class_weight="balanced_subsample"`), which is not used here.
-
----
-
-## 10. Models and Hyperparameters
-
-Both models are instantiated in `models/factory.py:get_model(name, random_state, class_weight)` and integrate cleanly with the strategy module:
-
-- **Random Forest** receives the `class_weight` dict directly.
-- **XGBoost** computes `scale_pos_weight = w1 / w0` and passes it as a constructor argument.
-
-### 10.1 XGBoost (`xgboost.XGBClassifier`)
-
-| Parameter | Value | Source / Rationale |
-|---|---|---|
-| `objective` | `binary:logistic` | xgboost default |
-| `eval_metric` | `"aucpr"` | Aligns internal eval with the thesis primary metric |
-| `learning_rate` | `0.05` | Conservative; better generalisation than the default 0.3 |
-| `max_depth` | `6` | Standard default; avoids extreme depth on imbalanced data |
-| `n_estimators` | `200` | More trees compensate for the lower learning rate |
-| `subsample` | `0.8` | Row subsampling per tree; regularisation |
-| `colsample_bytree` | `0.8` | Feature subsampling per tree; regularisation |
-| `tree_method` | `"hist"` | Histogram-based; significantly faster on large datasets |
-| `scale_pos_weight` | `w1 / w0` (or unset) | Derived from `class_weight` dict by `factory.py` |
-| `device` | `"cuda"` if `nvidia-smi` available, else `"cpu"` | Auto-detect via `_detect_xgb_device()`; silent CPU fallback |
-| `n_jobs` | `-1` | All CPU cores |
-| `random_state` | `42` | `configs/experiment.yaml` |
-| Early stopping | not set | — |
-
-### 10.2 Random Forest (`sklearn.ensemble.RandomForestClassifier`)
-
-| Parameter | Value | Source / Rationale |
-|---|---|---|
-| `n_estimators` | `100` | Stable estimate baseline |
-| `max_features` | `"sqrt"` | Standard for classification |
-| `min_samples_leaf` | `5` | Prevents overfitting to isolated noise; matters under extreme imbalance |
-| `max_samples` | `200_000` | **RAM-bound** — see below |
-| `bootstrap` | `True` | sklearn default |
-| `class_weight` | `{0: w0, 1: w1}` (or `None`) | Strategy-supplied |
-| `n_jobs` | `4` | Conservative parallelism (memory-bounded, see below) |
-| `random_state` | `42` | `configs/experiment.yaml` |
-| `verbose` | `2` | Per-tree progress logging |
-
-#### Why `max_samples = 200_000` ?
-
-The compute environment used for Part A had **179 GB of RAM**. Despite this, attempting `max_samples=None` (sklearn default — bootstrap of full training-set size) reproducibly hit OOM. Memory budget:
-
-| Item | Calculation | Size |
-|---|---|---|
-| Train matrix `X_train` (float64) | 123,246,589 × 30 × 8 B | ~30 GB |
-| Per-tree bootstrap sample (default = `n_samples`) | identical | ~30 GB |
-| Parallel trees (`n_jobs=4`) | 4 × 30 GB just for bootstraps | ~120 GB |
-| Plus feature cache, tree structures, NumPy/Python overhead | | ~30–50 GB |
-| **Total** | | **> 179 GB → OOM** |
-
-`max_samples = 200_000` (≈ 0.0016 × `n_train`) was the only tested value that produced stable training. Intermediate values were not systematically swept. **No methodological motivation exists** beyond the RAM constraint — the choice is purely pragmatic.
-
-**Quantitative consequence (defense-relevant).** Under bootstrap with replacement at `max_samples = 200_000`, expected positives per tree = `200_000 × (63,811 / 123,246,589) ≈ 103`. This is a **structural ceiling** for what any imbalance strategy can do on RF in this setup, and explains the limited variation observed for RF + class weighting across `target_prevalence` levels (cf. §9.7).
-
-#### Hyperparameter rationale beyond inline comments
-
-No commit messages or pilot-tuning notebooks document additional rationale beyond the inline comments above. **TBD: confirm with the author whether pilot tuning was performed on a sub-sample, or whether all values are deliberate informed defaults.**
-
----
-
-## 11. Evaluation Metrics and Threshold Policy
-
-### 11.1 Metrics (`evaluation/metrics.py:compute_all_metrics`)
-
-In order of importance:
-
-| Metric | Notes |
-|---|---|
-| `pr_auc` | **Primary**. `sklearn.metrics.average_precision_score`. Threshold-independent. |
-| `roc_auc` | Threshold-independent. Reported but **not** primary under extreme imbalance. |
-| `precision` / `recall` / `f1` / `f2` | Threshold-dependent. F2 (β = 2) added for recall-weighted reference. |
-| `weighted_accuracy` | Class-imbalance-corrected. Each positive carries `sample_weight = n_neg / n_pos`. |
-| `tp`, `fp`, `tn`, `fn`, `threshold` | Confusion-matrix counts and the threshold that produced them. |
-
-Metrics are persisted as both JSON (per-split, human-readable) and single-row CSV (per-split, easy to aggregate).
-
-### 11.2 Threshold policy
-
-Two threshold conditions are systematically reported per run:
-
-| Condition | Threshold | Where |
-|---|---|---|
-| **Default** | 0.5 | `metrics_{val,test}.json/.csv` (written by `runner.py`) |
-| **F1-optimal** | argmax F1 over all unique val scores | `metrics_{val,test}_thresh.json/.csv` + `threshold_info.json` (written by `re_evaluate.py`) |
-
-**No-leakage guarantees** in `re_evaluate.py`:
-- The threshold is selected *only* on the validation set, via `find_optimal_threshold(y_val, y_score_val, criterion="f1")`.
-- The model is **not** retrained.
-- The selected threshold is applied **once** to the test set.
-
-This separation lets the leaderboard (§12) compare strategies both under the naive threshold and at an operationally meaningful operating point.
-
----
-
-## 12. Result Aggregation and Leaderboard
-
-`experiments/aggregate.py:aggregate_part_a` walks `outputs/runs_v2/`, picks up every run that has both a `run_config.json` (with `strategy` + `target_prevalence`) and `metrics_{val,test}.json`, and assembles `outputs/leaderboard_v2/part_a_summary_v2.csv`.
-
-Per-run columns include:
-- **Configuration**: `model`, `strategy`, `target_prevalence`, `achieved_train_prevalence`, `train_rows_after_sampling`, `train_positives_after_sampling`, `n_synthetic_samples`, `val_rows`, `val_positives`, `test_rows`, `test_positives`, `train_time_sec`, `created_at`
-- **Default-threshold metrics** (val + test): `pr_auc`, `roc_auc`, `precision`, `recall`, `f1`, `weighted_accuracy`, `tp`, `fp`, `tn`, `fn`
-- **Optimal-threshold metrics** (val_thresh + test_thresh): `precision`, `recall`, `f1`, `weighted_accuracy`, `tp`, `fp`, `tn`, `fn`
-- **Threshold metadata**: `optimal_threshold`, `threshold_criterion`
-
-Sort: `pr_auc_test` desc, then `recall_test_thresh` desc.
-
-The thesis-table generator (`analysis/results_tables.py`) consumes this CSV plus per-strategy JSONs from Part B and produces:
-
-| Output | Content |
-|---|---|
-| `results/tables/table1a_main_results.{csv,md}` | Primary Part A leaderboard |
-| `results/tables/table1b_appendix_results.{csv,md}` | Extended Part A metrics |
-| `results/tables/table3_feature_importance_xgboost.{csv,md}` | XGBoost feature importance |
-| `results/tables/table4_feature_importance_rf.{csv,md}` | Random Forest feature importance |
-| `results/tables/table5_part_b_multi_threshold.{csv,md}` | Part B Multi-Threshold (4 rows: Part A reference + 3 strategies) |
-
----
-
-## 13. Part B — PAI-HNU (primary) + auxiliary components
-
-Part B answers Sub-Question 4 (see §1). The **primary** contribution is
-**Strategy 6 — Part-A-Informed Hard-Negative Undersampling (PAI-HNU)**;
-the previously-implemented `true_cost_weighting` and Multi-Threshold
-analyses remain in the codebase as **auxiliary / exploratory** evidence.
-
-### 13.0 Strategy 6 — PAI-HNU (primary contribution)
-
-**Idea.** Construct an XGBoost training set that retains all positives
-and selects negatives from three disjoint pools:
-
-* **50 % hard negatives** — top-scored majority rows from the Part A
-  XGBoost Baseline (capped at `20 × n_pos` per the design plan).
-* **25 % temporal-stratified random negatives** — uniform across 20 equal
-  blocks of the chronologically-sorted training split.
-* **25 % global random negatives** — uniform across the remainder.
-
-XGBoost is trained on this set with **identical hyperparameters to Part
-A** (`models/factory.py:_xgboost`); no `scale_pos_weight` is set —
-the imbalance is treated by the sampling, not by re-weighting.
-
-**Modules.**
-
-| Module | Responsibility |
-|---|---|
-| `sampling/hard_negative_undersampling.py` | Pure sampler: target counts, top-k via `np.argpartition`, temporal stratification, global random, no-overlap validator, manifest writer |
-| `experiments/score_baseline_train.py` | One-shot scoring of the Part-A Baseline on the **training split only**; produces `splits_v2/baseline_train_scores.parquet` (+ sha256 meta). Resolution order for the Baseline model: CLI → YAML → auto-discovery → explicit `--retrain-baseline` fallback |
-| `experiments/run_part_b_pai_hnu.py` | Orchestrator; runs one experiment per target prevalence; writes default- and F1-optimal-threshold metrics; supports `--sample-n-train K` for mini-end-to-end smoke runs |
-| `configs/benchmark_part_b_pai_hnu.yaml` | Shares (50/25/25), prevalences, hard-cap, baseline reference run id |
-| `configs/paths_large_part_b_pai_hnu.yaml` | Outputs/leaderboard isolation; reuses processed/splits/feature cache from Part A |
-| `tests/test_pai_hnu_sampler.py` | 6 deterministic unit tests on synthetic data |
-| `docs/part_b_pai_hnu_design.md` | SQ-4, mapping table (Part-A-Finding → Weakness → Design Decision), method, anti-leakage rules, success criteria, smoke protocol |
-
-**Anti-leakage.** Five explicit rules (AL1–AL5) documented in the design
-doc. Validation/test arrays are loaded but never passed to the sampler;
-the baseline scoring script reads only the training feature cache; the
-F1-optimal threshold is derived strictly on validation; the score cache
-is content-hashed and recorded in every manifest; smoke runs go to a
-separate output tree.
-
-**Success criteria.** A run is successful if **at least one** target
-prevalence satisfies *all three* of:
-
-1. `pr_auc_test ≥ 0.108` (does not destroy ranking quality vs. Baseline)
-2. `f1_test_thresh ≥ 0.95 × max F1 across the six Part A **XGBoost** anchor rows in Table 6` (Baseline best PR-AUC, RUS @0.5 %, Class Weighting @1.0 %, ADASYN best PR-AUC, SMOTE best PR-AUC, SMOTE best F1).
-3. `fp_per_tp(test_thresh) ≤ fp_per_tp(xgboost__random_undersampling__p010)`
-
-The six Part A anchor rows are selected programmatically in
-`analysis/results_tables.py` via `_select_part_a_xgboost_rows_for_table6`
-(fixed order; RUS @0.5 % and Class Weighting @1.0 % are mandatory).
-Table 6 additionally requires three non-smoke PAI-HNU runs at 0.1 %, 0.5 %, and 1.0 %.
-
-### 13.1 Auxiliary — `true_cost_weighting`
-
-**Idea.** Whereas `class_weighting` derives weights from a chosen `target_prevalence`, `true_cost_weighting` uses the **actual** observed training imbalance: `w1 = n_neg / n_pos ≈ 1930` for LI-Large. No resampling.
-
-**Grid** (`configs/benchmark_part_b.yaml`): 1 strategy × 2 models × 3 prevalences = 6 runs (target_prevalence is recorded as metadata only; the weights themselves are computed from the data).
-
-**Run command.**
-
-```
-python -m aml_benchmark.experiments.grid_runner \
-    --paths configs/paths_large_part_b_v3.yaml \
-    --benchmark configs/benchmark_part_b.yaml
-```
-
-Or programmatically: `grid_runner.run_part_b_grid(paths)`.
-
-### 13.2 Auxiliary — Multi-strategy threshold optimisation (no retraining)
-
-**Premise.** The Part A XGBoost Baseline produces a fixed score function. PR-AUC is then a property of the *entire* PR curve and is invariant under threshold selection. Three operating-point strategies are evaluated against the **same** scores:
-
-| Strategy | Objective on validation |
-|---|---|
-| `precision_constrained` | argmax F1 subject to `precision ≥ 0.10`; tiebreak by utility `U = TP − 0.05 · FP`. **Operationally recommended** for AML compliance (capped alert volume). |
-| `f1_max` | argmax F1. Methodologically standard reference. |
-| `f2_max` | argmax F2 (β = 2). Recall-weighted; aligns with FATF/FinCEN expectations. |
-
-**Anti-leakage guarantees** (`experiments/threshold_optimizer.py`):
-1. The threshold grid is built from **validation-score quantiles only** (max 1,000 points). Test scores are never inspected for grid construction.
-2. The selector functions accept only `y_val` and `y_score_val`; `y_test` is never in scope at selection time.
-3. **PR-AUC invariance** is asserted at runtime (`abs(test_pr_auc − part_a_pr_auc) > 1e-9` raises `RuntimeError`). A failure means scores differ across strategies — i.e. an accidental retrain or score mix-up.
-4. The Part A reference operating point is loaded from `threshold_info.json` (i.e. **F1-optimal**, not 0.5). Using 0.5 as the comparison baseline would inflate apparent improvements.
-
-**Selected representative run.** `xgboost__baseline__p001__20260404_143052`. The `baseline` strategy is mathematically invariant to `target_prevalence` (no resampling, no class weighting), so all three baseline runs (p001/p005/p010) produce bit-identical models — one is sufficient.
-
-**Run command.**
-
-```
-python -m aml_benchmark.experiments.threshold_optimizer \
-    --paths configs/paths_large_v2.yaml
-```
-
-**Outputs.**
-
-| Path | Content |
-|---|---|
-| `outputs/part_b_thresholds/<run_id>/<strategy>/metrics_{val,test}.{json,csv}` | Per-strategy metrics |
-| `outputs/part_b_thresholds/<run_id>/<strategy>/threshold_info.json` | Per-strategy chosen threshold + Part A reference + deltas |
-| `results/part_b_multi_threshold_summary.json` | Consolidated record (all strategies + invariance check) |
-
-A self-test (`--dry-run`) executes all three strategies on mock scores and asserts the invariance — useful as a CI-style smoke check.
-
----
-
-## 14. Reproducibility
-
-| Mechanism | Implementation |
-|---|---|
-| Single random seed | `configs/experiment.yaml: random_seed: 42` |
-| Seed propagation | All models, samplers, and the ADASYN subsample RNG receive `random_state=42` |
-| Deterministic split | Pure chronological partition, no random state involved |
-| Deterministic path resolution | `PathConfig` resolves all paths from the project root via `__file__`; absolute paths in the YAML pass through as-is (Drive support) |
-| Immutable raw data | `data/raw/` is never written to |
-| Frozen splits + manifest | `data/splits_v2/{train,val,test}.parquet` + `split_manifest.json` |
-| Frozen feature cache | `*_features_v2.parquet` + `feature_pipeline_v2.pkl` |
-| Per-run `run_config.json` | Records every parameter, achieved prevalence, class weights, timings |
-| Serialised artefacts | `feature_pipeline.pkl`, `model.pkl` per run — re-evaluation never retrains |
-| PR-AUC invariance assertion (Part B) | Runtime check: `abs(test_pr_auc − part_a_pr_auc) > 1e-9` raises |
-| Resume support | `grid_runner._find_completed_run` skips runs that already have `metrics_test.json` + `run_config.json` |
-| Auto-backup to Drive | `grid_runner._auto_backup` copies splits + per-run outputs after each successful run |
-
-### Library versions
-
-`pyproject.toml` declares lower bounds:
-
-```
-"pandas>=2.0", "pyarrow>=12.0", "numpy>=1.24", "PyYAML>=6.0",
-"scikit-learn>=1.3", "imbalanced-learn>=0.11", "xgboost>=2.0",
-"matplotlib>=3.7", "seaborn>=0.12", "jupyter>=1.0"
-# requires-python = ">=3.10"
-```
-
-**Installed versions used in the LI-Large Colab production run — TBD.** Run the following in the production environment and paste the result into this section:
+To record exact versions from your run environment:
 
 ```bash
 python --version
-pip freeze | grep -E "^(scikit-learn|xgboost|imbalanced-learn|numpy|pandas|pyarrow|joblib|PyYAML)="
+pip freeze
 ```
 
 ---
 
-## 15. Hardware Context and Performance
+## 4. Data acquisition
 
-| Item | Value |
-|---|---|
-| Production environment | Colab Pro+ high-memory instance, **179 GB RAM** |
-| GPU | NVIDIA (auto-detected by `factory.py:_detect_xgb_device`); used by XGBoost |
-| Random Forest parallelism | `n_jobs = 4` (memory-bounded — see §10.2) |
-| XGBoost parallelism | `n_jobs = -1`, `device = cuda` |
-| RF max_samples | `200_000` per tree — full bootstrap is OOM even at 179 GB (§10.2) |
-| Approximate per-run training time | XGBoost (GPU) baseline / class_weighting: ~ 2–3 min; RUS @ 1 %: ~ 1–2 min; SMOTE / ADASYN @ 1 %: ~ 5–10 min; RF generally longer than XGBoost-GPU at the same `n_estimators`. **Exact numbers: TBD from Colab logs.** |
+**Source:** IBM AMLworld synthetic AML dataset (Low-Illicit Large). Public download (e.g. Kaggle) — use the transaction CSV, accounts CSV, and optional patterns file as required by your ingestion path.
 
-**Smaller-RAM environments are not supported** for Random Forest with the current setup — XGBoost is significantly more memory-friendly and runs in much smaller environments.
+**Expected raw layout** (typical; exact names resolved in `configs/paths_large_v2.yaml`):
 
----
+| File | Role |
+|------|------|
+| `LI-Large_Trans.csv` | Transaction log |
+| `LI-Large_accounts.csv` | Account → entity metadata (for entity-type encoding) |
+| `LI-Large_Patterns.txt` | Pattern metadata; **not used** for LI-Large labelling in this pipeline (performance); labels come from the CSV ground-truth column |
 
-## 16. Known Limitations
-
-1. **No hyperparameter tuning.** Defaults are documented in §10; the comparison isolates strategies, not hyperparameters.
-2. **Feature set is MVP.** No graph-topology features; no embeddings; no external data.
-3. **No cross-validation.** A single fixed temporal split is used for all 30 conditions.
-4. **Pattern matching disabled in Large.** Per-pattern-type stratification (e.g. "which strategies catch FAN-IN best?") is therefore not available for LI-Large. The CSV ground truth still labels every illicit transaction correctly.
-5. **RF + `max_samples=200_000` structurally limits any imbalance strategy.** ~103 expected positives per tree at LI-Large prevalence is a structural cap on RF responsiveness to `target_prevalence` (§9.7, §10.2). This is treated as a result, not a defect.
-6. **Class weighting on RF does not vary much across `target_prevalence`.** Per the analysis in §9.7, this follows from (5), not from a `class_weight` bug in sklearn.
+Place files under `data/raw/` or set **absolute paths** in YAML for Colab/Drive.
 
 ---
 
-## 17. Open Questions / TBD
+## 5. Repository layout
 
-| # | Item | Where to find it |
-|---|---|---|
-| 1 | Total transaction count + global natural prevalence (pre-split) | `data/splits_v2/split_manifest.json` (Drive) or directly from `transactions_labeled.parquet` |
-| 2 | Train/Val/Test exact `date_start` and `date_end` | `split_manifest.json` (Drive) — written by `splitter.py:_split_stats` |
-| 3 | Exact installed library versions | Run the `pip freeze` snippet in §14 in the Colab environment |
-| 4 | Hyperparameter rationale beyond inline comments | Author confirmation: were defaults pilot-tuned, or are they all informed defaults? |
-| 5 | Per-condition runtimes (XGB vs RF, baseline vs SMOTE vs ADASYN) | Aggregate from `run_config.json:train_time_sec` across `outputs/runs_v2/` |
+```
+classimbalance/
+├── configs/                  # paths*.yaml, split.yaml, experiment.yaml, benchmark*.yaml
+├── data/
+│   ├── raw/                  # Immutable IBM exports (not committed if large)
+│   ├── processed_v2/         # Labelled parquet(s)
+│   └── splits_v2/          # train/val/test parquet + feature cache + manifest
+├── docs/
+│   └── part_b_pai_hnu_design.md
+├── notebooks/                # Primary Colab runbooks for thesis-scale experiments (edit Drive paths)
+├── outputs/                  # *Logical* artefact tree when outputs_dir is inside the repo (local/tests)
+│   ├── runs_v2/              # Part A runs — on Colab often under Drive, see paths_large_v2.yaml
+│   ├── runs_part_b_pai_hnu/  # PAI-HNU runs — see paths_large_part_b_pai_hnu.yaml
+│   └── leaderboard_v2/       # part_a_summary_v2.csv — may live on Drive after Colab aggregate
+├── results/                  # inputs for results_tables + generated tables; may be copied from Drive or empty in git
+├── tests/
+│   └── test_pai_hnu_sampler.py
+├── scripts/                  # Optional local analytics (not imported as package)
+│   ├── analyze_part_a_v2.py  # Summaries / reports from part_a_summary_v2.csv
+│   └── analyze_part_b_v2.py  # Part B v2 comparison helpers
+├── analysis/                 # Standalone repo-root utilities (run as scripts)
+│   ├── feature_importance.py # CLI: aggregate feature_importances_ from run folders
+│   ├── visualize_results.py  # Figures from leaderboard CSVs → analysis/figures/
+│   └── figures/              # Generated PNGs (e.g. PR-AUC, recall–precision)
+├── src/aml_benchmark/        # Installable package (pip install -e .)
+│   ├── config.py             # PathConfig, YAML loading
+│   ├── data/                 # ingest, schema, labeler, make_dataset, splitter, pattern_parser
+│   ├── features/             # pipeline, aggregator, feature_cache
+│   ├── sampling/             # strategies, prevalence, hard_negative_undersampling
+│   ├── models/               # factory (RF, XGBoost)
+│   ├── evaluation/           # metrics
+│   ├── experiments/          # runner, grid_runner, re_evaluate, aggregate,
+│   │                         # score_baseline_train, run_part_b_pai_hnu, threshold_optimizer
+│   ├── analysis/             # results_tables.py — thesis tables (python -m aml_benchmark.analysis.results_tables)
+│   ├── reporting/            # build_part_a_tables, build_part_b_tables (Markdown/LaTeX)
+│   └── utils/                # io, logging, hashing
+├── pyproject.toml
+└── README_PROJECT_STRUCTURE.md   # This file
+```
+
+**Two different `analysis` locations:**
+
+| Path | Role |
+|------|------|
+| **`analysis/`** (repo root) | Helper **scripts** executed as `python analysis/<script>.py`; not part of the `aml_benchmark` import path unless you add it manually. |
+| **`src/aml_benchmark/analysis/`** | Package module **`results_tables`** — run as `python -m aml_benchmark.analysis.results_tables` after `pip install -e .`. |
+
+**Configuration:** `PathConfig` (`src/aml_benchmark/config.py`) loads YAML; relative paths resolve from the repository root, absolute paths are used as-is (e.g. Colab `/content/drive/...`).
+
+**Repo vs. Drive layout:** Backup folders on Drive (e.g. `aml_results/large_run_v2_<timestamp>/`) may bundle `runs/`, `leaderboard/`, `processed/`, and `splits/` in one tree that **differs from the flat `outputs/` sketch above**. That is expected: the **code** writes to whatever `outputs_dir` / `leaderboard_dir` / `splits_dir` the active YAML defines. The tree in this section shows the **package’s conventional directory names** (`runs_v2`, `runs_part_b_pai_hnu`, etc.); your Colab config may redirect all of that under a single Drive parent.
 
 ---
 
-## 18. Appendix — CLI Cheat-Sheet
+## 6. End-to-end pipeline
 
-All commands assume the package is installed (`pip install -e .`) and the working directory is the repository root.
+```
+Raw CSV  →  make_dataset  →  transactions_labeled.parquet
+         →  splitter      →  train/val/test.parquet + split_manifest.json
+         →  grid_runner / runner  →  outputs/.../<run_id>/ (model, metrics @0.5)
+         →  re_evaluate   →  metrics_*_thresh + threshold_info (F1 on val)
+         →  aggregate     →  part_a_summary_v2.csv
+Part B   →  score_baseline_train  →  baseline scores on train only
+         →  run_part_b_pai_hnu    →  PAI-HNU runs + metrics
+```
 
-### Fresh end-to-end Part A on LI-Large
+Artefact folders in the diagram are **where the pipeline writes for the currently loaded `paths_*.yaml`** — typically **Google Drive** for thesis-scale Colab runs, not necessarily `./outputs` in a local git clone.
+
+---
+
+## 7. Dataset (LI-Large)
+
+**Scale (thesis):** ~176 M transactions; **splits** approximately **123.25M / 26.41M / 26.41M** train/val/test (70/15/15). Natural training prevalence ≈ **0.052 %**; validation and test are slightly higher — preserved as realistic drift.
+
+**Authoritative row counts and date ranges:** `data/splits_v2/split_manifest.json` (produced by `data/splitter.py`).
+
+**Schema helpers:** `src/aml_benchmark/data/schema.py` (`RAW_TRANS_COLUMNS`, canonical columns for modelling).
+
+---
+
+## 8. Labelling
+
+**Canonical binary target:** `label` = IBM generator column `is_laundering_csv` (CSV column mapped in schema). **Pattern joins are disabled for LI-Large** in the labelling path used at scale; pattern-based labels would under-cover layering-stage illicit events.
+
+See `src/aml_benchmark/data/labeler.py`, `make_dataset.py`.
+
+---
+
+## 9. Temporal split
+
+**Method:** Sort by `timestamp`, partition by **row index quantiles** (70/15/15). No random permutation — **purely temporal**.
+
+**Leakage controls relevant to features:**  
+(1) `FeaturePipeline.fit_transform` only on **train**; val/test **transform** only.  
+(2) Account-level rolling features in `features/aggregator.py` use **strictly past** transactions in each window relative to the current row’s timestamp.
+
+`configs/split.yaml` stores the ratio; `data/splitter.py` implements the split and manifest.
+
+---
+
+## 10. Feature engineering (30 features)
+
+**Implementation:** `src/aml_benchmark/features/pipeline.py` + `src/aml_benchmark/features/aggregator.py` (+ optional `feature_cache.py` for persisted matrices).
+
+**Assembly order** (column index matches `FEATURE_NAMES` and per-run `run_config.json:feature_names`):
+
+| Block | Count | Content |
+|-------|------:|---------|
+| Numeric | 2 | `amount_paid`, `amount_received` — **log1p** |
+| Categorical | 2 | `payment_format`, `payment_currency` — **OrdinalEncoder** fit on train; unknown → NaN |
+| Derived | 8 | `hour`, `day_of_week`, `same_bank_flag`, `self_transfer_flag`, `currency_mismatch`, `amount_ratio` (raw ratio clipped to [0,10]; paid=0 → 1.0), `fan_in_score`, `fan_out_score` (from 7d account rolls, clipped; see code) |
+| Account-level | 18 | Sender/receiver: tx counts (1d/7d/30d), avg amounts (7d/30d), unique counterparties (7d/30d), cross-bank ratio (30d), entity type |
+
+**Cache (Part A v2 grid):** After the first full feature build, matrices may be stored as `data/splits_v2/*_features_v2.parquet` and `feature_pipeline_v2.pkl` to avoid recomputing rolling aggregates.
+
+---
+
+## 11. Imbalance mitigation strategies (Part A)
+
+**Module:** `src/aml_benchmark/sampling/strategies.py`, `prevalence.py`.
+
+**Target prevalence → imblearn ratio:** \(r = p / (1-p)\) with `prevalence_to_ratio`.
+
+| Strategy | Mechanism |
+|----------|-----------|
+| `baseline` | No change; prevalence recorded only |
+| `random_undersampling` | `RandomUnderSampler` when imposed prevalence > natural |
+| `smote` | `SMOTE`, `k_neighbors = min(5, n_pos-1)` |
+| `adasyn` | `ADASYN` with **majority subsample cap (500,000)** for density estimation; synthetic counts scaled to full-train target; subsample uses `ratio_sub` bounded by `min(ratio_sub, 1.0)` per thesis — see code and thesis §5.5.1 |
+| `class_weighting` | No resampling; `w0=1`, `w1=(1-p)/p` → RF `class_weight`; XGB `scale_pos_weight = w1/w0` |
+
+**Additional implemented helpers** (used in **legacy / exploratory** Part B grids, **not** the thesis PAI-HNU definition):
+
+| Key | Purpose |
+|-----|---------|
+| `smote_class_weighting` | Combined SMOTE + cost weighting (experimental grid) |
+| `true_cost_weighting` | Weights from **observed** class counts (`n_neg/n_pos`) without resampling |
+
+These are **not** PAI-HNU; PAI-HNU is implemented only via `sampling/hard_negative_undersampling.py` and `run_part_b_pai_hnu.py`.
+
+---
+
+## 12. Models and hyperparameters
+
+**Factory:** `src/aml_benchmark/models/factory.py`.
+
+**XGBoost:** `n_estimators=200`, `max_depth=6`, `learning_rate=0.05`, `subsample=0.8`, `colsample_bytree=0.8`, `tree_method="hist"`, `eval_metric="aucpr"`, `random_state` from config. **`device`:** `"cuda"` if `nvidia-smi` succeeds, else `"cpu"`.
+
+**Random Forest:** `n_estimators=100`, `max_features="sqrt"`, `min_samples_leaf=5`, **`max_samples=200_000`** (memory cap on LI-Large), `n_jobs=4`, `random_state` from config.
+
+**Thesis alignment:** RF bootstrap cap is **pragmatic** (OOM with full bootstrap at ~123M rows × parallelism); interpret RF results under that structural constraint (see thesis §8).
+
+---
+
+## 13. Evaluation metrics and threshold policy
+
+**Module:** `src/aml_benchmark/evaluation/metrics.py`.
+
+**Primary:** PR-AUC (`average_precision_score`). **Secondary:** ROC-AUC.
+
+**Threshold-dependent (at chosen threshold):** precision, recall, F1, **F2** (β=2), weighted accuracy (positive weight `n_neg/n_pos`), TP/FP/TN/FN.
+
+**Threshold selection (thesis):** F1 maximised on **validation** scores; that threshold is applied **once** to **test** without further tuning. Implemented in `experiments/re_evaluate.py` (writes `metrics_*_thresh.json` and `threshold_info.json` per Part A run). Part B PAI-HNU uses the same policy for its packaged `*_opt` metrics (see `run_part_b_pai_hnu.py`).
+
+**Part A leaderboard:** `aggregate.py` can include `f2_*` columns when present in per-run JSONs; otherwise F2 may be derived post hoc from reported precision and recall at the F1-optimal threshold (thesis §5.6).
+
+---
+
+## 14. Results aggregation and thesis tables
+
+**Part A leaderboard:** `python -m aml_benchmark.experiments.aggregate --paths configs/paths_large_v2.yaml` → path given by your YAML’s `leaderboard_dir` / `part_a_summary` (e.g. `outputs/leaderboard_v2/part_a_summary_v2.csv` locally, or a CSV on Drive after Colab).
+
+**Thesis tables:** `python -m aml_benchmark.analysis.results_tables` expects inputs under the repo’s **`results/`** directory by default (`results/part_a_summary_v2.csv`, feature-importance CSVs, etc.) and scans **`outputs/runs_part_b_pai_hnu/`** relative to the project root for PAI-HNU runs. If your truth files live only on **Drive**, **copy or symlink** the needed CSVs and ensure PAI-HNU run folders are visible at the paths documented in `results_tables.py`, or extend paths in a small fork — the thesis tables are generated from **files on disk**, not from Colab implicitly.
+
+---
+
+## 15. Part B — PAI-HNU (primary contribution)
+
+**Name in thesis:** Part-A-informed Hard-Negative Undersampling (**PAI-HNU**) — the **sixth** imbalance strategy; **XGBoost only**; same hyperparameters as Part A; **no** extra `scale_pos_weight` (distribution handles imbalance).
+
+**Design reference:** `docs/part_b_pai_hnu_design.md` (mapping table, anti-leakage, smoke levels).
+
+| Component | Path |
+|-----------|------|
+| Sampler | `src/aml_benchmark/sampling/hard_negative_undersampling.py` |
+| Baseline scores on **train only** | `src/aml_benchmark/experiments/score_baseline_train.py` |
+| Orchestrator | `src/aml_benchmark/experiments/run_part_b_pai_hnu.py` |
+| Configs | `configs/benchmark_part_b_pai_hnu.yaml`, `configs/paths_large_part_b_pai_hnu.yaml` |
+| Tests | `tests/test_pai_hnu_sampler.py` |
+
+**Anti-leakage (summary):** Baseline that ranks hard negatives is trained on **train** only; scoring cache covers **training rows only**; sampler uses **training indices**; val/test untouched; final shuffle uses seed **`random_seed + 1`** (42 → 43) per thesis §5.7.
+
+**Outputs:** One directory per run as configured by **`paths_large_part_b_pai_hnu.yaml`** (conventionally `.../runs_part_b_pai_hnu/<run_id>/` when outputs sit next to the repo; on Colab often under **`aml_results`/analogous Drive folders**). Each run includes `run_config.json`, `sampling_manifest.json`, `model.pkl`, metrics at 0.5 and F1-opt-derived `*_opt` artefacts as implemented.
+
+---
+
+## 16. Legacy / exploratory Part B code (optional)
+
+The repository may still contain **auxiliary** experiments **not** central to the final thesis narrative:
+
+| Component | Description |
+|-----------|-------------|
+| `experiments/threshold_optimizer.py` | Multi **operating point** selection on a **fixed** Part A XGBoost baseline (F1/F2/precision-constrained) — **no retraining** |
+| `configs/benchmark_part_b.yaml`, `paths_large_part_b_v3.yaml` | Grid for `true_cost_weighting` / older Part B layout |
+| `configs/benchmark_part_b_multi.yaml` | Multi-threshold config hook |
+
+You may delete or archive these **after** confirming your submitted thesis does not depend on their tables. `results_tables.py` skips optional inputs if files are missing.
+
+---
+
+## 17. Feature importance
+
+**Script:** `analysis/feature_importance.py` — walks completed run directories, reads `model.feature_importances_` and `run_config.json:feature_names`, writes aggregate CSVs (RF: impurity-based MDI; XGBoost: library default importances — state explicitly in thesis).
+
+**Notebook:** `notebooks/feature_importance.ipynb` (or equivalent) for Google Colab + Drive paths.
+
+---
+
+## 18. Reproducibility
+
+| Mechanism | Detail |
+|-----------|--------|
+| Global seed | `configs/experiment.yaml` — `random_seed: 42` |
+| PAI-HNU shuffle | Derived seed **43** (`random_seed + 1`) for final training-set shuffle |
+| Split | Deterministic temporal indices — **no** RNG |
+| Artefacts | Per-run `run_config.json` + serialised `model.pkl` and metrics JSON/CSV |
+| Paths | YAML-driven `PathConfig` for local vs Colab |
+| Immutability | `data/raw/` treated as read-only |
+
+---
+
+## 19. Hardware and runtime
+
+**Reference environment (thesis):** Google Colab Pro+ with **~179 GB RAM** and **NVIDIA A100-class GPU** for XGBoost. Random Forest uses **`n_jobs=4`** to stay within memory limits.
+
+**Order-of-magnitude runtimes:** XGBoost Part A conditions often **a few minutes** with GPU; Random Forest **longer**; exact `train_time_sec` per run is stored in `run_config.json`.
+
+Smaller machines may run **subsampled** PAI-HNU (`--sample-n-train`) for smoke tests only.
+
+---
+
+## 20. Known limitations
+
+1. **No hyperparameter tuning** — isolates strategies, not tuned models.  
+2. **Single temporal split** — no cross-validation folds.  
+3. **No global graph features** (PageRank, betweenness) — out of scope.  
+4. **LI-Large:** pattern-based stratification disabled; labels from CSV ground truth.  
+5. **RF `max_samples=200_000`** — structural cap on positives per tree; interpret RF under thesis §5.4 / §8.
+
+---
+
+## 21. Appendix — CLI cheat sheet
+
+All commands assume `pip install -e .` and cwd = repository root.
+
+### Part A (LI-Large v2)
 
 ```bash
-# 1. Build labeled dataset
 python -m aml_benchmark.data.make_dataset --paths configs/paths_large_v2.yaml
-
-# 2. Build splits
 python -m aml_benchmark.data.splitter --paths configs/paths_large_v2.yaml
-
-# 3. Run the full 30-condition Part A grid (resume-capable)
 python -m aml_benchmark.experiments.grid_runner --paths configs/paths_large_v2.yaml
-
-# 4. F1-optimal threshold post-hoc (writes metrics_*_thresh + threshold_info)
 python -m aml_benchmark.experiments.re_evaluate --paths configs/paths_large_v2.yaml
-
-# 5. Aggregate the leaderboard
 python -m aml_benchmark.experiments.aggregate --paths configs/paths_large_v2.yaml
 ```
 
-### Part B — Strategy 6 (PRIMARY: PAI-HNU)
+### Part B — PAI-HNU
 
 ```bash
-# 0. Run the unit tests (Level 1 of the smoke protocol)
 pytest tests/test_pai_hnu_sampler.py -v
 
-# 1. Score the Part-A baseline on the training split (one-shot, ~10–15 min on GPU)
 python -m aml_benchmark.experiments.score_baseline_train \
     --paths configs/paths_large_part_b_pai_hnu.yaml
 
-# 1b. (Optional Drive override / explicit retrain fallback)
+# Optional: explicit baseline model path or retrain fallback
 python -m aml_benchmark.experiments.score_baseline_train \
     --paths configs/paths_large_part_b_pai_hnu.yaml \
-    --baseline-model-path /content/drive/MyDrive/.../model.pkl
+    --baseline-model-path /path/to/model.pkl
 
 python -m aml_benchmark.experiments.score_baseline_train \
     --paths configs/paths_large_part_b_pai_hnu.yaml --retrain-baseline
 
-# 2. Mini end-to-end smoke (Level 3): 200K-row subsample, 0.01 prevalence,
-#    output goes to outputs/runs_part_b_pai_hnu_smoke/
+# Smoke: subsampled train, reduced prevalence
 python -m aml_benchmark.experiments.run_part_b_pai_hnu \
     --paths configs/paths_large_part_b_pai_hnu.yaml \
     --target-prevalences 0.01 \
     --sample-n-train 200000
 
-# 3. FULL runs (Level 4) — only after explicit user confirmation
+# Full PAI-HNU grid (confirm resources)
 python -m aml_benchmark.experiments.run_part_b_pai_hnu \
     --paths configs/paths_large_part_b_pai_hnu.yaml
 ```
 
-### Part B — Auxiliary `true_cost_weighting`
+### Legacy — `true_cost_weighting` grid (optional)
 
 ```bash
 python -m aml_benchmark.experiments.grid_runner \
@@ -852,37 +427,28 @@ python -m aml_benchmark.experiments.grid_runner \
     --benchmark configs/benchmark_part_b.yaml
 ```
 
-### Part B — Auxiliary Multi-Threshold (no retraining)
+### Legacy — multi-threshold on fixed baseline scores (optional)
 
 ```bash
-# All three strategies on the Part A XGBoost Baseline
-python -m aml_benchmark.experiments.threshold_optimizer \
-    --paths configs/paths_large_v2.yaml
-
-# Subset of strategies
-python -m aml_benchmark.experiments.threshold_optimizer \
-    --paths configs/paths_large_v2.yaml \
-    --strategies precision_constrained f1_max
-
-# Self-test with mock scores (CI-style smoke check)
-python -m aml_benchmark.experiments.threshold_optimizer --dry-run
+python -m aml_benchmark.experiments.threshold_optimizer --paths configs/paths_large_v2.yaml
+python -m aml_benchmark.experiments.threshold_optimizer --paths configs/paths_large_v2.yaml --dry-run
 ```
 
-### Generate thesis tables
+### Thesis tables and feature importance
 
 ```bash
 python -m aml_benchmark.analysis.results_tables
-# Outputs to results/tables/{table1a, table1b, table3, table4, table5, table6}.{csv,md}
-# table6 (PAI-HNU vs. Part A) is generated only if outputs/runs_part_b_pai_hnu/ contains runs.
+python analysis/feature_importance.py --paths configs/paths_large_v2.yaml
 ```
 
-### Single ad-hoc experiment (for debugging)
+### Single debug run (Part A runner defaults)
 
 ```bash
 python -m aml_benchmark.experiments.runner --paths configs/paths_large_v2.yaml
-# Defaults: random_forest, baseline, target_prevalence=0.01
 ```
 
 ---
 
-*Document last updated: 2026-05-01 · Project: AML Benchmark · Thesis: Bachelor FS26*
+*Module mapping (thesis Ch. 5 ↔ code): dataset §7–8 → `data/*`; split §9 → `splitter.py`; features §10 → `features/pipeline.py`, `aggregator.py`; strategies §11 → `sampling/strategies.py`; models §12 → `models/factory.py`; metrics §13 → `metrics.py`, `re_evaluate.py`; PAI-HNU §15 → `hard_negative_undersampling.py`, `score_baseline_train.py`, `run_part_b_pai_hnu.py`.*
+
+*Document version: 2026-05 — aligned with bachelor thesis methodology (PAI-HNU as Part B strategy; legacy Part B tools documented separately).*
