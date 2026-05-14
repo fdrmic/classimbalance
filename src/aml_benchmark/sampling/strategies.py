@@ -61,6 +61,7 @@ SUPPORTED_STRATEGIES = (
     "baseline",
     "random_undersampling",
     "smote",
+    "smote_class_weighting",
     "adasyn",
     "class_weighting",
     "true_cost_weighting",
@@ -137,6 +138,8 @@ def apply_strategy(
         result = _random_undersampling(X_train, y_train, target_prevalence, random_state)
     elif strategy == "smote":
         result = _smote(X_train, y_train, target_prevalence, random_state)
+    elif strategy == "smote_class_weighting":
+        result = _smote_class_weighting(X_train, y_train, target_prevalence, random_state)
     elif strategy == "adasyn":
         result = _adasyn(X_train, y_train, target_prevalence, random_state)
     elif strategy == "class_weighting":
@@ -270,6 +273,79 @@ def _smote(
         n_positive=n_pos_after,
         n_negative=int((1 - y_res).sum()),
         strategy="smote",
+        target_prevalence=target_prevalence,
+        n_synthetic=n_synthetic,
+    )
+
+
+def _smote_class_weighting(
+    X: np.ndarray,
+    y: np.ndarray,
+    target_prevalence: float,
+    random_state: int,
+) -> SamplingResult:
+    """SMOTE oversampling plus cost-sensitive class weights from original labels."""
+    from imblearn.over_sampling import SMOTE
+
+    from aml_benchmark.sampling.prevalence import compute_class_weights_from_data
+
+    logger.info(
+        "Strategy: smote_class_weighting | SMOTE oversampling + true cost-sensitive weighting"
+    )
+
+    y_original = y
+
+    natural = compute_achieved_prevalence(y)
+    n_pos_before = int(y.sum())
+
+    if target_prevalence <= natural:
+        logger.warning(
+            f"SMOTE: target_prevalence={target_prevalence:.4%} <= "
+            f"natural={natural:.6%}. Natural prevalence already meets target; "
+            "returning data unchanged."
+        )
+        class_weight = compute_class_weights_from_data(y_original)
+        achieved = compute_achieved_prevalence(y)
+        return SamplingResult(
+            X=X, y=y,
+            class_weight=class_weight,
+            achieved_prevalence=achieved,
+            n_positive=int(y.sum()),
+            n_negative=int((1 - y).sum()),
+            strategy="smote_class_weighting",
+            target_prevalence=target_prevalence,
+            n_synthetic=0,
+        )
+
+    k_neighbors = min(5, n_pos_before - 1)
+    if k_neighbors < 1:
+        raise ValueError(
+            f"SMOTE requires at least 2 positive samples; got {n_pos_before}."
+        )
+
+    ratio = prevalence_to_ratio(target_prevalence)
+    smote = SMOTE(
+        sampling_strategy=ratio,
+        k_neighbors=k_neighbors,
+        random_state=random_state,
+    )
+    logger.info(f"SMOTE fit_resample starting (ratio={ratio:.4f}, k={k_neighbors}) ...")
+    X_res, y_res = smote.fit_resample(X, y)
+    logger.info("SMOTE fit_resample done.")
+
+    class_weight = compute_class_weights_from_data(y_original)
+
+    n_pos_after = int(y_res.sum())
+    n_synthetic = n_pos_after - n_pos_before
+    achieved = compute_achieved_prevalence(y_res)
+
+    return SamplingResult(
+        X=X_res, y=y_res,
+        class_weight=class_weight,
+        achieved_prevalence=achieved,
+        n_positive=n_pos_after,
+        n_negative=int((1 - y_res).sum()),
+        strategy="smote_class_weighting",
         target_prevalence=target_prevalence,
         n_synthetic=n_synthetic,
     )

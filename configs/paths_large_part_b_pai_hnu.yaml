@@ -1,0 +1,29 @@
+# paths_large_part_b_pai_hnu.yaml
+# Part B Strategy 6 — PAI-HNU (Part-A-Informed Hard-Negative Undersampling)
+#
+# Reuses the Part-A processed dataset, splits, and feature cache. Only the
+# outputs and leaderboard directories are isolated so Part-A artefacts are
+# never overwritten.
+raw_dir: data/raw
+processed_dir: data/processed_v2
+splits_dir: data/splits_v2
+outputs_dir: outputs/runs_part_b_pai_hnu
+leaderboard_dir: outputs/leaderboard_part_b_pai_hnu
+
+transactions_filename: LI-Large_Trans.csv
+accounts_filename: LI-Large_accounts.csv
+patterns_filename: LI-Large_Patterns.txt
+
+output_transactions_labeled: transactions_labeled.parquet
+split_manifest: split_manifest.json
+part_a_summary: part_b_pai_hnu_summary.csv
+
+# Optional explicit override for the Part-A baseline XGBoost model used to
+# generate hard-negative scores. Resolution order:
+#   1. CLI arg --baseline-model-path
+#   2. This field (if non-empty)
+#   3. Auto-discovery in outputs_dir/<preferred_run_id>/model.pkl
+# Leave empty for auto-discovery; set when running on Drive / Colab.
+# Example (Colab/Drive):
+#   baseline_model_path: /content/drive/MyDrive/aml_results/large_run_v2_20260407_1904/runs/xgboost__baseline__p001__20260404_143052/model.pkl
+baseline_model_path: ""

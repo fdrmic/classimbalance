@@ -104,6 +104,13 @@ class PathConfig:
         # Leaderboard
         self.part_a_summary: Path = self.leaderboard_dir / cfg["part_a_summary"]
 
+        # Optional explicit baseline model path (Part B PAI-HNU only).
+        # Empty string or missing key -> auto-discovery in callers.
+        baseline_raw = cfg.get("baseline_model_path", "") or ""
+        self.baseline_model_path: Path | None = (
+            _resolve(baseline_raw) if baseline_raw else None
+        )
+
     def validate(self) -> None:
         """Raise FileNotFoundError for any missing raw input."""
         for attr, path in [

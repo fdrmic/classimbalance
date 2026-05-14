@@ -1,0 +1,16 @@
+rank,feature,mean_importance
+1,payment_format,0.178189
+2,receiver_entity_type,0.088431
+3,sender_unique_counterparties_30d,0.073041
+4,sender_tx_count_7d,0.070793
+5,sender_unique_counterparties_7d,0.067736
+6,self_transfer_flag,0.066743
+7,sender_entity_type,0.059839
+8,same_bank_flag,0.050977
+9,receiver_tx_count_7d,0.044192
+10,receiver_tx_count_1d,0.034096
+11,sender_cross_bank_ratio_30d,0.029336
+12,receiver_cross_bank_ratio_30d,0.028381
+13,currency_mismatch,0.023929
+14,fan_in_score,0.023252
+15,sender_tx_count_1d,0.020886

@@ -8,7 +8,7 @@ optimistic.
 
 Secondary metrics
 -----------------
-``roc_auc``, ``precision``, ``recall``, ``f1``,
+``roc_auc``, ``precision``, ``recall``, ``f1``, ``f2``,
 ``weighted_accuracy``, ``tp``, ``fp``, ``tn``, ``fn``.
 
 Weighted accuracy
@@ -54,6 +54,7 @@ from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
     f1_score,
+    fbeta_score,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -191,6 +192,7 @@ def compute_all_metrics(
     ``precision``         – at *threshold*
     ``recall``            – at *threshold*
     ``f1``                – at *threshold*
+    ``f2``                – at *threshold* (recall-weighted F-beta with beta=2)
     ``weighted_accuracy`` – class-imbalance-corrected accuracy (see module docstring)
     ``tp``                – true positives
     ``fp``                – false positives
@@ -210,6 +212,7 @@ def compute_all_metrics(
     precision = float(precision_score(y_true, y_pred, zero_division=0))
     recall = float(recall_score(y_true, y_pred, zero_division=0))
     f1 = float(f1_score(y_true, y_pred, zero_division=0))
+    f2 = float(fbeta_score(y_true, y_pred, beta=2.0, zero_division=0))
 
     # --- Confusion matrix counts -----------------------------------------
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
@@ -223,6 +226,7 @@ def compute_all_metrics(
         "precision": precision,
         "recall": recall,
         "f1": f1,
+        "f2": f2,
         "weighted_accuracy": weighted_acc,
         "tp": float(tp),
         "fp": float(fp),
@@ -337,6 +341,7 @@ def _log_metrics(metrics: dict[str, float], split: str) -> None:
     logger.info(f"             precision         : {metrics['precision']:.6f}")
     logger.info(f"             recall            : {metrics['recall']:.6f}")
     logger.info(f"             f1                : {metrics['f1']:.6f}")
+    logger.info(f"             f2                : {metrics['f2']:.6f}")
     logger.info(f"             weighted_accuracy : {metrics['weighted_accuracy']:.6f}")
     logger.info(
         f"             confusion: "

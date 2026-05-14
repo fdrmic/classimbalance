@@ -196,6 +196,88 @@ def run_grid(paths: PathConfig | None = None) -> None:
     _print_grid_summary(passed, failed, elapsed)
 
 
+def run_part_b_grid(paths: PathConfig | None = None) -> None:
+    """Execute Part B Strategy 6 grid: XGBoost + smote_class_weighting only.
+
+    Same control flow as :func:`run_grid` (resume, auto-backup, per-run errors).
+    """
+    if paths is None:
+        paths = PathConfig()
+
+    paths.validate_splits()
+
+    models = ["xgboost"]
+    strategies = ["true_cost_weighting"]
+    prevalences = [0.001]
+
+    total = len(models) * len(strategies) * len(prevalences)
+    logger.info("=" * 62)
+    logger.info("PART B BENCHMARK GRID")
+    logger.info(f"  Models      : {models}")
+    logger.info(f"  Strategies  : {strategies}")
+    logger.info(f"  Prevalences : {[f'{p:.3%}' for p in prevalences]}")
+    logger.info(f"  Total runs  : {total}")
+    logger.info("=" * 62)
+
+    passed: list[str] = []
+    failed: list[tuple[str, str]] = []
+
+    t_grid_start = time.perf_counter()
+    run_count = 0
+
+    for strategy in strategies:
+        for model_name in models:
+            for target_prevalence in prevalences:
+                run_count += 1
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                ptag = _prevalence_tag(target_prevalence)
+                run_id = f"{model_name}__{strategy}__{ptag}__{ts}"
+
+                logger.info(
+                    f"[{run_count}/{total}] "
+                    f"model={model_name}  strategy={strategy}  "
+                    f"prevalence={target_prevalence:.3%}"
+                )
+
+                existing = _find_completed_run(
+                    paths, model_name, strategy, target_prevalence
+                )
+                if existing:
+                    logger.info(
+                        f"  SKIPPING -- completed run found: {existing}"
+                    )
+                    passed.append(existing)
+                    continue
+
+                try:
+                    run_experiment(
+                        model_name=model_name,
+                        strategy=strategy,
+                        target_prevalence=target_prevalence,
+                        run_id=run_id,
+                        paths=paths,
+                    )
+                    passed.append(run_id)
+
+                    backup_root = Path(
+                        "/content/drive/MyDrive/aml_results/large_run_v2_ongoing"
+                    )
+                    _auto_backup(paths, run_id, backup_root)
+
+                except Exception as exc:
+                    error_msg = f"{type(exc).__name__}: {exc}"
+                    logger.error(
+                        f"Run FAILED: {run_id}\n{traceback.format_exc()}"
+                    )
+                    failed.append((run_id, error_msg))
+
+    elapsed = time.perf_counter() - t_grid_start
+    _print_grid_summary(
+        passed, failed, elapsed,
+        banner_title="PART B BENCHMARK GRID - COMPLETE",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -204,11 +286,12 @@ def _print_grid_summary(
     passed: list[str],
     failed: list[tuple[str, str]],
     elapsed: float,
+    banner_title: str = "PART A BENCHMARK GRID - COMPLETE",
 ) -> None:
     total = len(passed) + len(failed)
     print()
     print("=" * 62)
-    print("  PART A BENCHMARK GRID - COMPLETE")
+    print(f"  {banner_title}")
     print("=" * 62)
     print(f"  Total runs   : {total}")
     print(f"  Passed       : {len(passed)}")
@@ -235,15 +318,23 @@ def main() -> None:
                         help="Path to a custom paths.yaml (e.g. for Colab)")
     parser.add_argument("--benchmark", type=str, default=None,
                         help="Path to a custom benchmark.yaml (e.g. benchmark_part_b.yaml)")
+    parser.add_argument(
+        "--part_b",
+        action="store_true",
+        help="Run Part B grid (smote_class_weighting + xgboost only)",
+    )
     args = parser.parse_args()
     try:
         paths = PathConfig(args.paths) if args.paths else PathConfig()
-        if args.benchmark:
-            import shutil
-            from pathlib import Path
-            project_root = Path(__file__).resolve().parents[3]
-            shutil.copy(args.benchmark, project_root / "configs" / "benchmark.yaml")
-        run_grid(paths=paths)
+        if args.part_b:
+            run_part_b_grid(paths=paths)
+        else:
+            if args.benchmark:
+                import shutil
+                from pathlib import Path
+                project_root = Path(__file__).resolve().parents[3]
+                shutil.copy(args.benchmark, project_root / "configs" / "benchmark.yaml")
+            run_grid(paths=paths)
     except FileNotFoundError as exc:
         logger.error(str(exc))
         sys.exit(1)
