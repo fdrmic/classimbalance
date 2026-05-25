@@ -197,7 +197,7 @@ def run_grid(paths: PathConfig | None = None) -> None:
 
 
 def run_part_b_grid(paths: PathConfig | None = None) -> None:
-    """Execute Part B Strategy 6 grid: XGBoost + smote_class_weighting only.
+    """Legacy Part B grid: XGBoost + smote_class_weighting only (not PAI-HNU).
 
     Same control flow as :func:`run_grid` (resume, auto-backup, per-run errors).
     """

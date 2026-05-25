@@ -10,7 +10,7 @@ Inputs (expected under the repository `results/` directory):
 Plus per-run output folders for the Part B multi-strategy threshold runs:
   - outputs/part_b_thresholds/<run_id>/<strategy>/threshold_info.json
 
-And for Part B PAI-HNU runs (Strategy 6):
+And for Part B PAI-HNU runs:
   - outputs/runs_part_b_pai_hnu/<run_id>/{run_config,metrics_test,metrics_test_opt}.json
 
 Outputs (written to results/tables/ as both .csv and .md):

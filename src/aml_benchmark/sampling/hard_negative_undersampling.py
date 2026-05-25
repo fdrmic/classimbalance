@@ -1,6 +1,6 @@
 """Part-A-Informed Hard-Negative Undersampling (PAI-HNU).
 
-This module implements Strategy 6 of the AML benchmark.  It constructs a
+This module implements the thesis Part B strategy (PAI-HNU).  It constructs a
 training set by:
 
 1. retaining ALL positives (no information loss on the minority class), and

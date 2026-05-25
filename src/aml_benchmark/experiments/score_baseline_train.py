@@ -2,7 +2,7 @@
 
 Why this script exists
 ----------------------
-Strategy 6 (PAI-HNU) selects "hard negatives" from the training split using
+PAI-HNU selects "hard negatives" from the training split using
 risk scores from the Part-A XGBoost Baseline. Computing predict_proba on
 ~123 M training rows is the dominant cost (~10–15 min on GPU,
 ~60+ min on CPU), so we cache the scores once and reuse them for all three

@@ -1,5 +1,5 @@
 # paths_large_part_b_pai_hnu.yaml
-# Part B Strategy 6 — PAI-HNU (Part-A-Informed Hard-Negative Undersampling)
+# Part B — PAI-HNU (Part-A-Informed Hard-Negative Undersampling)
 #
 # Reuses the Part-A processed dataset, splits, and feature cache. Only the
 # outputs and leaderboard directories are isolated so Part-A artefacts are

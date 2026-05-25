@@ -1,4 +1,4 @@
-"""Part B Strategy 6 runner: Part-A-Informed Hard-Negative Undersampling.
+"""Part B PAI-HNU runner: Part-A-Informed Hard-Negative Undersampling.
 
 Orchestrates one or more PAI-HNU experiments:
 

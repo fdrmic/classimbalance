@@ -325,15 +325,18 @@ These are **not** PAI-HNU; PAI-HNU is implemented only via `sampling/hard_negati
 
 ## 16. Legacy / exploratory Part B code (optional)
 
-The repository may still contain **auxiliary** experiments **not** central to the final thesis narrative:
+The repository may still contain **auxiliary** code **not** central to the final thesis narrative:
 
 | Component | Description |
 |-----------|-------------|
 | `experiments/threshold_optimizer.py` | Multi **operating point** selection on a **fixed** Part A XGBoost baseline (F1/F2/precision-constrained) — **no retraining** |
-| `configs/benchmark_part_b.yaml`, `paths_large_part_b_v3.yaml` | Grid for `true_cost_weighting` / older Part B layout |
-| `configs/benchmark_part_b_multi.yaml` | Multi-threshold config hook |
 
-You may delete or archive these **after** confirming your submitted thesis does not depend on their tables. `results_tables.py` skips optional inputs if files are missing.
+**Not included in this repository snapshot** (recover from git history or thesis archive if needed): `configs/benchmark_part_b.yaml`, `configs/benchmark_part_b_multi.yaml`, `configs/paths_large_part_b_v2.yaml`, `configs/paths_large_part_b_v3.yaml`, and `configs/paths_part_b.yaml` — these supported older `true_cost_weighting` / multi-threshold experiments. `results_tables.py` skips optional inputs if files are missing.
+
+### Smoke vs. production outputs (submission)
+
+- Full PAI-HNU runs use `paths.outputs_dir` from `configs/paths_large_part_b_pai_hnu.yaml` (e.g. `outputs/runs_part_b_pai_hnu/`).
+- **`--sample-n-train` smokes** write under **`outputs/runs_part_b_pai_hnu_smoke/`** (see `run_part_b_pai_hnu.py`). That directory is **gitignored** — do not treat it as thesis artefacts. See `docs/code_submission.md`.
 
 ---
 
@@ -355,6 +358,7 @@ You may delete or archive these **after** confirming your submitted thesis does 
 | Artefacts | Per-run `run_config.json` + serialised `model.pkl` and metrics JSON/CSV |
 | Paths | YAML-driven `PathConfig` for local vs Colab |
 | Immutability | `data/raw/` treated as read-only |
+| PAI-HNU `n_pos` / cap | Train positives = `split_manifest.json` → `"split":"train"` → `n_positive`; cap = `hard_negative_cap_multiplier × n_pos` (see `configs/benchmark_part_b_pai_hnu.yaml`, `docs/code_submission.md`) |
 
 ---
 
@@ -419,13 +423,9 @@ python -m aml_benchmark.experiments.run_part_b_pai_hnu \
     --paths configs/paths_large_part_b_pai_hnu.yaml
 ```
 
-### Legacy — `true_cost_weighting` grid (optional)
+### Legacy — `true_cost_weighting` grid (configs not shipped)
 
-```bash
-python -m aml_benchmark.experiments.grid_runner \
-    --paths configs/paths_large_part_b_v3.yaml \
-    --benchmark configs/benchmark_part_b.yaml
-```
+Older Part B grid YAMLs (`benchmark_part_b.yaml`, `paths_large_part_b_v3.yaml`, etc.) are **not** in this repository snapshot. Restore from version control / archive if you still need them.
 
 ### Legacy — multi-threshold on fixed baseline scores (optional)
 

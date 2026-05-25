@@ -1,0 +1,15 @@
+# paths.yaml — default / small layout (LI-Small or local smoke)
+# For LI-Large v2 thesis runs use configs/paths_large_v2.yaml instead.
+raw_dir: data/raw
+processed_dir: data/processed
+splits_dir: data/splits
+outputs_dir: outputs/runs
+leaderboard_dir: outputs/leaderboard
+
+transactions_filename: LI-Large_Trans.csv
+accounts_filename: LI-Large_accounts.csv
+patterns_filename: LI-Large_Patterns.txt
+
+output_transactions_labeled: transactions_labeled.parquet
+split_manifest: split_manifest.json
+part_a_summary: part_a_summary.csv

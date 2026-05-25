@@ -1,4 +1,4 @@
-# Part B — Strategy 6: Part-A-Informed Hard-Negative Undersampling (PAI-HNU)
+# Part B — PAI-HNU: Part-A-Informed Hard-Negative Undersampling
 
 > Purpose: define a single, defendable, Part-A-informed mitigation
 > strategy that addresses the empirical weaknesses observed in Part A

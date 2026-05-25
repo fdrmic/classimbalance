@@ -1,6 +1,6 @@
 # benchmark_part_b_pai_hnu.yaml
 # -------------------------------------------------------
-# Strategy 6 — Part-A-Informed Hard-Negative Undersampling (PAI-HNU)
+# PAI-HNU — Part-A-Informed Hard-Negative Undersampling (thesis Part B)
 #
 # Single strategy, single model (XGBoost), three target prevalences.
 # Hyperparameter set is intentionally identical to Part A
@@ -22,9 +22,14 @@ sampling:
 
   # Hard-negative selection cap (Variant B from the design plan):
   #   n_hard_actual = min(round(hard_negative_share * n_neg_target),
-  #                       hard_negative_cap_multiplier * n_pos)
-  # Default 20× n_pos = ~1.276M hard negatives at LI-Large.
-  # When the cap binds, the leftover quota is reallocated 50/50 between
+  #                       hard_negative_cap_multiplier * n_pos,
+  #                       n_neg_total)
+  # n_pos = number of training positives = train split's n_positive in
+  # split_manifest.json (written by splitter.py alongside train.parquet).
+  # Reported LI-Large v2 run: n_pos = 63,811 → with multiplier 20:
+  #   n_hard_cap = 1,276,220 (matches docs/part_b_cap_analysis.md).
+  # Re-verify n_pos from your manifest after any re-split.
+  # When the cap binds, leftover hard quota is reallocated 50/50 between
   # temporal and global random pools (see sampling.hard_negative_undersampling).
   hard_negative_cap_multiplier: 20
 

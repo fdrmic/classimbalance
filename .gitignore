@@ -12,6 +12,9 @@ venv/
 data/processed/
 outputs/
 
+# PAI-HNU smoke runs (not thesis artefacts; see docs/code_submission.md)
+outputs/runs_part_b_pai_hnu_smoke/
+
 # Jupyter
 .ipynb_checkpoints/
 
